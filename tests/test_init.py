@@ -34,16 +34,33 @@ def _amber_forecast(now):
     return out
 
 
-async def _setup(hass):
+async def _setup(hass, powersync_prices=True):
     now = dt_util.utcnow()
     ps_entry = MockConfigEntry(domain="power_sync", title="PowerSync")
     ps_entry.add_to_hass(hass)
     hass.data["power_sync"] = {
         ps_entry.entry_id: {
-            "amber_coordinator": SimpleNamespace(data={"forecast": _amber_forecast(now), "current": []}),
+            "amber_coordinator": SimpleNamespace(
+                data={"forecast": _amber_forecast(now), "current": []} if powersync_prices else None
+            ),
             "solcast_coordinator": SimpleNamespace(data={"forecasts": []}),
         }
     }
+    if not powersync_prices:
+        # Amber Express shape: {time, value} in $/kWh.
+        general = [i for i in _amber_forecast(now) if i["channelType"] == "general"]
+        feed_in = [i for i in _amber_forecast(now) if i["channelType"] == "feedIn"]
+        hass.states.async_set(
+            "sensor.amber_express_home_general_price",
+            "0.02",
+            {"forecast": [{"time": i["startTime"], "value": i["perKwh"] / 100} for i in general]},
+        )
+        hass.states.async_set(
+            "sensor.amber_express_home_feed_in_price",
+            "-0.03",
+            {"forecast": [{"time": i["startTime"], "value": i["perKwh"] / 100} for i in feed_in]},
+        )
+        hass.states.async_set("sensor.power_sync_current_export_price", "0.03")
     hass.states.async_set("sensor.power_sync_battery_level", "30", {"unit_of_measurement": "%"})
     hass.states.async_set("sensor.power_sync_battery_mode", "normal")
     hass.states.async_set("sensor.power_sync_home_load", "1.0", {"unit_of_measurement": "kW"})
@@ -100,7 +117,7 @@ async def test_settings_are_entities(hass):
     for entity_id in (
         "number.energy_planner_battery_target_at_peak",
         "number.energy_planner_ev_target_at_peak",
-        "number.energy_planner_ev_state_of_charge",
+        "number.energy_planner_ev_state_of_charge_manual",
         "switch.energy_planner_allow_selling_to_grid",
         "time.energy_planner_peak_price_starts",
         "sensor.energy_planner_battery_at_peak",
@@ -126,3 +143,24 @@ async def test_auto_charges_plugged_in_car(hass):
     assert switch_on and switch_on[0].data["entity_id"] == "switch.charger_charge_control"
     # The charger already offers 32 A, which is what the plan wants.
     assert not set_current
+
+
+async def test_falls_back_to_amber_express(hass):
+    await _setup(hass, powersync_prices=False)
+    status = hass.states.get("sensor.energy_planner_status")
+    assert status.attributes["price_source"] == "price entities"
+    steps = hass.states.get("sensor.energy_planner_plan_now").attributes["steps"]
+    assert abs(steps[0]["import_price"] - 0.02) < 1e-6
+    # Feed-in was negative-for-earning in this feed; it's flipped to match PowerSync.
+    assert abs(steps[0]["export_price"] - 0.03) < 1e-6
+
+
+async def test_uses_car_soc_and_charge_limit(hass):
+    entry, _ = await _setup(hass)
+    hass.states.async_set("sensor.wmw52ga0507r62550_battery_hv_state_of_charge", "70")
+    hass.states.async_set("sensor.wmw52ga0507r62550_battery_ev_target_state_of_charge", "75")
+    hass.states.async_set("sensor.charger_status_connector", "Preparing")
+    await hass.data[DOMAIN][entry.entry_id].async_refresh()
+    await hass.async_block_till_done()
+    assert hass.states.get("sensor.energy_planner_status").attributes["ev_soc_used"] == 70
+    assert float(hass.states.get("sensor.energy_planner_ev_at_peak").state) <= 75.5

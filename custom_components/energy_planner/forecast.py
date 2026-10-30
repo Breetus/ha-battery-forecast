@@ -97,6 +97,34 @@ def parse_amber(intervals: list[dict]) -> tuple[list[Interval], list[Interval]]:
     return sorted(imports.values(), key=lambda i: i.start), sorted(exports.values(), key=lambda i: i.start)
 
 
+def parse_series(items: list[dict], time_key: str = "time", value_key: str = "value", default_minutes: int = 30) -> list[Interval]:
+    """Parse [{time, value}, ...] where each point lasts until the next one.
+
+    This is the Amber Express "forecast" attribute: 5-minute points first,
+    then 30-minute points, values in $/kWh.
+    """
+    points = []
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        start = parse_time(item.get(time_key))
+        value = item.get(value_key)
+        if start is None or value is None:
+            continue
+        try:
+            points.append((start.replace(second=0, microsecond=0), float(value)))
+        except (TypeError, ValueError):
+            continue
+    points.sort()
+    out = []
+    for i, (start, value) in enumerate(points):
+        end = start + timedelta(minutes=default_minutes)
+        if i + 1 < len(points) and points[i + 1][0] > start:
+            end = min(end, points[i + 1][0])
+        out.append(Interval(start, end, value))
+    return out
+
+
 def parse_solar(periods: list[dict], key: str = "pv_estimate") -> list[Interval]:
     """Parse Solcast periods (API or HA integration shape) into kW intervals."""
     out = []
@@ -226,6 +254,38 @@ def deadlines(now: datetime, tz, hour: int, minute: int, days: int = 3) -> list[
         if dl > local:
             out.append(dl)
     return out
+
+
+def profile_from_changes(
+    changes: list[tuple[datetime, float | None]], end: datetime, tz, bins: int = 48, default: float = 1.0
+) -> list[float]:
+    """Time-weighted time-of-day profile from state changes.
+
+    Each value holds until the next change; None marks a gap (unavailable).
+    """
+    sums = [0.0] * bins
+    weights = [0.0] * bins
+    bin_len = timedelta(minutes=1440 // bins)
+    changes = sorted(changes, key=lambda c: c[0])
+    for i, (start, value) in enumerate(changes):
+        if value is None:
+            continue
+        stop = changes[i + 1][0] if i + 1 < len(changes) else end
+        t = start
+        while t < stop:
+            local = t.astimezone(tz)
+            idx = int((local.hour * 60 + local.minute) / (1440 / bins)) % bins
+            bin_start = local.replace(second=0, microsecond=0) - timedelta(minutes=local.minute % (1440 // bins))
+            seg_end = min(stop, bin_start + bin_len)
+            secs = (seg_end - t).total_seconds()
+            if secs <= 0:
+                break
+            sums[idx] += value * secs
+            weights[idx] += secs
+            t = seg_end
+    total = sum(weights)
+    overall = sum(sums) / total if total else default
+    return [round(sums[i] / weights[i], 3) if weights[i] else round(overall, 3) for i in range(bins)]
 
 
 def profile_from_samples(samples: list[tuple[datetime, float]], tz, bins: int = 48, default: float = 1.0) -> list[float]:

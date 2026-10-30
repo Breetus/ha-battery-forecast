@@ -79,3 +79,23 @@ def test_profile_from_samples():
     samples = [(t + timedelta(minutes=30 * i), 2.0 if i == 3 else 1.0) for i in range(48)]
     profile = fc.profile_from_samples(samples, BNE)
     assert profile[3] == 2.0 and profile[4] == 1.0
+
+
+def test_parse_amber_express_series():
+    t = datetime(2026, 10, 30, 10, 0, tzinfo=BNE)
+    items = [{"time": (t + timedelta(minutes=5 * i)).isoformat(), "value": 0.10 + i / 100} for i in range(3)]
+    items.append({"time": (t + timedelta(minutes=30)).isoformat(), "value": 0.30})
+    out = fc.parse_series(items)
+    assert [i.end - i.start for i in out] == [timedelta(minutes=5)] * 2 + [timedelta(minutes=20), timedelta(minutes=30)]
+    assert out[-1].value == 0.30
+
+
+def test_profile_from_changes_is_time_weighted():
+    t = datetime(2026, 10, 30, 0, 0, tzinfo=BNE)
+    # 0:00-0:10 at 3 kW, 0:10-0:30 at 0 kW; 0:30-1:00 unavailable; then 2 kW until 1:30.
+    changes = [(t, 3.0), (t + timedelta(minutes=10), 0.0), (t + timedelta(minutes=30), None), (t + timedelta(hours=1), 2.0)]
+    profile = fc.profile_from_changes(changes, t + timedelta(minutes=90), BNE)
+    assert abs(profile[0] - 1.0) < 1e-6
+    assert profile[2] == 2.0
+    # Bin 1 had no data, so it gets the overall mean.
+    assert abs(profile[1] - (3 * 10 + 2 * 30) / 60) < 1e-3

@@ -24,6 +24,7 @@ from .const import (
     CONF_CHARGER_STATUS,
     CONF_CHARGER_SWITCH,
     CONF_CHARGER_VOLTAGE,
+    CONF_EV_LIMIT,
     CONF_EV_POWER,
     CONF_EV_SOC,
     CONF_EXPORT_LIMIT,
@@ -59,7 +60,7 @@ from .planner import Params, Plan, plan
 
 _LOGGER = logging.getLogger(__name__)
 
-LOAD_HISTORY_DAYS = 14
+LOAD_HISTORY_DAYS = 10  # the recorder keeps 10 days by default
 EV_EFFICIENCY = 0.9
 STORE_VERSION = 1
 
@@ -158,7 +159,7 @@ class EnergyPlannerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def _integrate_ev(self, new_kw: float) -> None:
         """Add charger energy since the last reading to the EV SoC estimate."""
         now = dt_util.utcnow()
-        if self._ev_energy_at is not None and not self.conf(CONF_EV_SOC):
+        if self._ev_energy_at is not None and self._float_state(self.conf(CONF_EV_SOC)) is None:
             hours = (now - self._ev_energy_at).total_seconds() / 3600
             cap = float(self.settings[SETTING_EV_CAPACITY]) or 1.0
             gained = self._ev_power_kw * hours * EV_EFFICIENCY / cap * 100
@@ -212,19 +213,35 @@ class EnergyPlannerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             imports, exports = fc.parse_amber(raw)
             if imports:
                 return imports, exports, "PowerSync Amber"
-        imports: list[fc.Interval] = []
-        exports: list[fc.Interval] = []
-        for key, target in ((CONF_PRICE_ENTITY, "general"), (CONF_FEED_IN_ENTITY, "feedIn")):
-            entity = self.conf(key)
-            state = self.hass.states.get(entity) if entity else None
-            if state is None:
-                continue
-            items = state.attributes.get("forecasts") or state.attributes.get("forecast") or []
-            items = [{**i, "_channel": target} for i in items if isinstance(i, dict)]
-            imp, exp = fc.parse_amber(items)
-            imports += imp
-            exports += exp
+        imports = self._price_entity(self.conf(CONF_PRICE_ENTITY), "general")
+        exports = self._price_entity(self.conf(CONF_FEED_IN_ENTITY), "feedIn")
+        if exports and self._feed_in_sign_flipped(exports):
+            exports = [fc.Interval(i.start, i.end, -i.value) for i in exports]
         return imports, exports, "price entities"
+
+    def _price_entity(self, entity: str | None, channel: str) -> list[fc.Interval]:
+        state = self.hass.states.get(entity) if entity else None
+        if state is None:
+            return []
+        items = state.attributes.get("forecasts") or state.attributes.get("forecast") or []
+        items = [i for i in items if isinstance(i, dict)]
+        if items and "time" in items[0] and "value" in items[0]:
+            return fc.parse_series(items)  # Amber Express
+        imp, exp = fc.parse_amber([{**i, "_channel": channel} for i in items])
+        return exp if channel == "feedIn" else imp
+
+    def _feed_in_sign_flipped(self, exports: list[fc.Interval]) -> bool:
+        """True when the feed-in entity shows earnings as negative.
+
+        Checked against PowerSync's current export price, which is positive
+        when exporting earns money.
+        """
+        reference = self._float_state("sensor.power_sync_current_export_price")
+        now = dt_util.utcnow()
+        current = next((i.value for i in exports if i.start <= now < i.end), None)
+        if reference is None or current is None or abs(reference) < 0.005 or abs(current) < 0.005:
+            return False
+        return (reference > 0) != (current > 0)
 
     def _solar(self) -> list[fc.Interval]:
         data = self._powersync_data("solcast_coordinator")
@@ -249,32 +266,34 @@ class EnergyPlannerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         profile = [1.0] * 48
         try:
             from homeassistant.components.recorder import get_instance
-            from homeassistant.components.recorder.statistics import statistics_during_period
+            from homeassistant.components.recorder.history import state_changes_during_period
 
-            load_id = self.conf(CONF_LOAD)
-            ev_id = self.conf(CONF_EV_POWER) if self.conf(CONF_LOAD_INCLUDES_EV) else None
-            ids = {i for i in (load_id, ev_id) if i}
-            start = now - timedelta(days=LOAD_HISTORY_DAYS)
-            stats = await get_instance(self.hass).async_add_executor_job(
-                statistics_during_period, self.hass, start, now, ids, "hour", None, {"mean"}
-            )
             tz = dt_util.get_default_time_zone()
-            ev_by_hour = {row["start"]: row.get("mean") or 0.0 for row in stats.get(ev_id, [])} if ev_id else {}
-            samples = []
-            load_unit_w = _is_watts(self.hass.states.get(load_id))
-            ev_unit_w = _is_watts(self.hass.states.get(ev_id)) if ev_id else False
-            for row in stats.get(load_id, []):
-                mean = row.get("mean")
-                if mean is None:
-                    continue
-                kw = mean / 1000 if load_unit_w else mean
-                ev = ev_by_hour.get(row["start"], 0.0)
-                kw -= ev / 1000 if ev_unit_w else ev
-                when = dt_util.utc_from_timestamp(row["start"]) if isinstance(row["start"], (int, float)) else row["start"]
-                for half in (0, 30):
-                    samples.append((when + timedelta(minutes=half), max(kw, 0.2)))
-            if samples:
-                profile = fc.profile_from_samples(samples, tz)
+            start = now - timedelta(days=LOAD_HISTORY_DAYS)
+
+            def _profile(entity_id: str) -> list[float] | None:
+                history = state_changes_during_period(
+                    self.hass, start, now, entity_id, no_attributes=True, include_start_time_state=True
+                ).get(entity_id, [])
+                unit_w = _is_watts(self.hass.states.get(entity_id))
+                changes = []
+                for st in history:
+                    value = _num(st.state)
+                    if value is not None and unit_w:
+                        value /= 1000
+                    changes.append((st.last_changed, value))
+                if not any(v is not None for _, v in changes):
+                    return None
+                return fc.profile_from_changes(changes, now, tz)
+
+            recorder = get_instance(self.hass)
+            load = await recorder.async_add_executor_job(_profile, self.conf(CONF_LOAD))
+            if load:
+                if self.conf(CONF_LOAD_INCLUDES_EV) and self.conf(CONF_EV_POWER):
+                    ev = await recorder.async_add_executor_job(_profile, self.conf(CONF_EV_POWER))
+                    if ev:
+                        load = [round(max(a - b, 0.2), 3) for a, b in zip(load, ev)]
+                profile = load
         except Exception:  # noqa: BLE001 - the plan still works on a flat guess
             _LOGGER.exception("Could not read load history; assuming 1 kW")
         self._load_profile = profile
@@ -297,6 +316,12 @@ class EnergyPlannerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def ev_soc(self) -> float:
         soc = self._float_state(self.conf(CONF_EV_SOC))
         return soc if soc is not None else float(self.settings[SETTING_EV_SOC])
+
+    def ev_target(self) -> float:
+        """Our EV target, capped at the charge limit set in the car."""
+        target = float(self.settings[SETTING_EV_TARGET])
+        limit = self._float_state(self.conf(CONF_EV_LIMIT))
+        return min(target, limit) if limit and limit > 0 else target
 
     # ----- planning ------------------------------------------------------
 
@@ -332,7 +357,7 @@ class EnergyPlannerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             ev_capacity_kwh=float(self.settings[SETTING_EV_CAPACITY]),
             ev_soc_pct=self.ev_soc(),
             ev_efficiency=EV_EFFICIENCY,
-            ev_target_pct=float(self.settings[SETTING_EV_TARGET]),
+            ev_target_pct=self.ev_target(),
             ev_levels_kw=tuple(round(a * voltage / 1000, 2) for a in sorted({6, 16, max_a})),
             deadlines=fc.deadlines(now, tz, hh, mm),
         )
@@ -344,6 +369,7 @@ class EnergyPlannerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             problems.append("no price forecast")
         if not solar:
             problems.append("no solar forecast (assuming none)")
+        problems += self._conflicts(control_ev)
 
         result: Plan | None = None
         if slots and soc is not None:
@@ -371,6 +397,17 @@ class EnergyPlannerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "price_source": price_source,
             "load_profile": load,
         }
+
+    def _conflicts(self, control_ev: bool) -> list[str]:
+        """PowerSync features that would fight the planner."""
+        out = []
+        if switch_on(self.hass, "switch.power_sync_optimization_enabled"):
+            out.append("PowerSync's own optimiser is on and will fight this one")
+        if control_ev:
+            for state in self.hass.states.async_all("switch"):
+                if state.entity_id.startswith("switch.power_sync_") and "solar_surplus" in state.entity_id and state.state == "on":
+                    out.append(f"{state.entity_id} is on and may switch the charger too")
+        return out
 
     def _schedule_boundary(self, slots) -> None:
         """Re-plan just after the next slot starts, so commands change on time."""
@@ -474,6 +511,11 @@ class EnergyPlannerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             d["start"] = s.start.isoformat()
             steps.append(d)
         return {"steps": steps, "deadline": result.deadline.isoformat() if result.deadline else None}
+
+
+def switch_on(hass: HomeAssistant, entity_id: str) -> bool:
+    state = hass.states.get(entity_id)
+    return state is not None and state.state == "on"
 
 
 def _num(value) -> float | None:

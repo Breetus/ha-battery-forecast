@@ -1,0 +1,129 @@
+# Energy Planner dashboard (YAML mode). See README for how it's registered.
+title: Energy Planner
+views:
+  - title: Energy Planner
+    path: energy-planner
+    icon: mdi:robot
+    cards:
+      - type: entities
+        title: Control
+        entities:
+          - entity: select.energy_planner_mode
+          - entity: sensor.energy_planner_status
+          - type: attribute
+            entity: sensor.energy_planner_status
+            attribute: ev
+            name: EV
+          - entity: sensor.energy_planner_plan_now
+          - entity: sensor.energy_planner_next_change
+          - entity: sensor.power_sync_battery_mode
+            name: PowerSync battery mode
+      - type: entities
+        title: Targets for the evening peak
+        entities:
+          - entity: time.energy_planner_peak_price_starts
+          - entity: number.energy_planner_battery_target_at_peak
+          - entity: sensor.energy_planner_battery_at_peak
+            name: Battery expected at peak
+          - entity: number.energy_planner_ev_target_at_peak
+          - entity: sensor.wmw52ga0507r62550_battery_hv_state_of_charge
+            name: Car state of charge now
+          - entity: sensor.wmw52ga0507r62550_battery_ev_target_state_of_charge
+            name: Charge limit set in the car
+          - entity: sensor.energy_planner_ev_at_peak
+            name: EV expected at peak
+          - entity: sensor.energy_planner_plan_cost
+      - type: entities
+        title: Preferences
+        entities:
+          - entity: switch.energy_planner_allow_selling_to_grid
+          - entity: switch.energy_planner_allow_grid_charging
+          - entity: switch.energy_planner_control_ev_charger
+          - entity: number.energy_planner_battery_reserve
+          - entity: number.energy_planner_battery_wear_cost
+          - entity: number.energy_planner_grid_import_limit
+          - entity: number.energy_planner_ev_battery_size
+          - entity: number.energy_planner_ev_state_of_charge_manual
+            name: Car SoC if its sensor is unavailable
+      - type: custom:apexcharts-card
+        header:
+          show: true
+          title: Plan
+        graph_span: 36h
+        span:
+          start: minute
+        yaxis:
+          - id: kw
+            decimals: 1
+            apex_config:
+              title: { text: kW }
+          - id: pct
+            opposite: true
+            min: 0
+            max: 100
+            decimals: 0
+            apex_config:
+              title: { text: "%" }
+          - id: price
+            opposite: true
+            decimals: 2
+            apex_config:
+              title: { text: $/kWh }
+        series:
+          - entity: sensor.energy_planner_plan_now
+            name: Battery %
+            yaxis_id: pct
+            type: line
+            stroke_width: 3
+            data_generator: |
+              return (entity.attributes.steps || []).map(s => [new Date(s.start).getTime(), s.battery_soc_pct]);
+          - entity: sensor.energy_planner_plan_now
+            name: EV %
+            yaxis_id: pct
+            type: line
+            stroke_width: 2
+            data_generator: |
+              return (entity.attributes.steps || []).filter(s => s.ev_soc_pct !== null).map(s => [new Date(s.start).getTime(), s.ev_soc_pct]);
+          - entity: sensor.energy_planner_plan_now
+            name: Battery kW (+charge)
+            yaxis_id: kw
+            type: column
+            data_generator: |
+              return (entity.attributes.steps || []).map(s => [new Date(s.start).getTime(), s.battery_kw]);
+          - entity: sensor.energy_planner_plan_now
+            name: Car kW
+            yaxis_id: kw
+            type: column
+            data_generator: |
+              return (entity.attributes.steps || []).map(s => [new Date(s.start).getTime(), s.ev_kw]);
+          - entity: sensor.energy_planner_plan_now
+            name: Grid kW (+import)
+            yaxis_id: kw
+            type: line
+            curve: stepline
+            data_generator: |
+              return (entity.attributes.steps || []).map(s => [new Date(s.start).getTime(), s.grid_kw]);
+          - entity: sensor.energy_planner_plan_now
+            name: Import price
+            yaxis_id: price
+            type: line
+            curve: stepline
+            stroke_width: 1
+            data_generator: |
+              return (entity.attributes.steps || []).map(s => [new Date(s.start).getTime(), s.import_price]);
+          - entity: sensor.energy_planner_plan_now
+            name: Feed-in price
+            yaxis_id: price
+            type: line
+            curve: stepline
+            stroke_width: 1
+            data_generator: |
+              return (entity.attributes.steps || []).map(s => [new Date(s.start).getTime(), s.export_price]);
+      - type: markdown
+        title: Next 12 hours
+        content: |
+          | Time | Plan | Batt % | Car % | Grid kW | Buy | Sell |
+          |---|---|---|---|---|---|---|
+          {%- for s in (state_attr('sensor.energy_planner_plan_now', 'steps') or [])[:24] %}
+          | {{ as_timestamp(s.start) | timestamp_custom('%H:%M') }} | {{ s.mode }}{% if s.power_kw %} {{ s.power_kw }} kW{% endif %}{% if s.ev_kw > 0.05 %} + car {{ s.ev_kw | round(1) }} kW{% endif %} | {{ s.battery_soc_pct }} | {{ s.ev_soc_pct if s.ev_soc_pct is not none else '' }} | {{ s.grid_kw | round(1) }} | {{ (s.import_price * 100) | round(0) }}c | {{ (s.export_price * 100) | round(0) }}c |
+          {%- endfor %}

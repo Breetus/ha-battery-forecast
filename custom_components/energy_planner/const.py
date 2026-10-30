@@ -15,6 +15,7 @@ CONF_LOAD = "load_entity"
 CONF_LOAD_INCLUDES_EV = "load_includes_ev"
 CONF_EV_POWER = "ev_power_entity"
 CONF_EV_SOC = "ev_soc_entity"
+CONF_EV_LIMIT = "ev_limit_entity"
 CONF_CHARGER_SWITCH = "charger_switch_entity"
 CONF_CHARGER_CURRENT = "charger_current_entity"
 CONF_CHARGER_STATUS = "charger_status_entity"
@@ -32,20 +33,21 @@ DEFAULTS = {
     CONF_BATTERY_SOC: "sensor.power_sync_battery_level",
     CONF_BATTERY_MODE: "sensor.power_sync_battery_mode",
     CONF_LOAD: "sensor.power_sync_home_load",
-    CONF_LOAD_INCLUDES_EV: True,
+    CONF_LOAD_INCLUDES_EV: False,
     CONF_EV_POWER: "sensor.ev_charging_power",
-    CONF_EV_SOC: "",
+    CONF_EV_SOC: "sensor.wmw52ga0507r62550_battery_hv_state_of_charge",
+    CONF_EV_LIMIT: "sensor.wmw52ga0507r62550_battery_ev_target_state_of_charge",
     CONF_CHARGER_SWITCH: "switch.charger_charge_control",
     CONF_CHARGER_CURRENT: "number.charger_maximum_current",
     CONF_CHARGER_STATUS: "sensor.charger_status_connector",
     CONF_HOUSE_HOLD: "input_boolean.ev_grid_only_hold_active",
-    CONF_PRICE_ENTITY: "",
-    CONF_FEED_IN_ENTITY: "",
-    CONF_SOLAR_ENTITIES: "",
+    CONF_PRICE_ENTITY: "sensor.amber_express_home_general_price",
+    CONF_FEED_IN_ENTITY: "sensor.amber_express_home_feed_in_price",
+    CONF_SOLAR_ENTITIES: "sensor.solcast_pv_forecast_forecast_today, sensor.solcast_pv_forecast_forecast_tomorrow, sensor.solcast_pv_forecast_forecast_day_3",
     CONF_BATTERY_CAPACITY: 20.0,
     CONF_MAX_POWER: 10.0,
     CONF_EXPORT_LIMIT: 10.0,
-    CONF_CHARGER_VOLTAGE: 230.0,
+    CONF_CHARGER_VOLTAGE: 240.0,
     CONF_CHARGER_MAX_A: 32,
 }
 
@@ -74,7 +76,7 @@ SETTING_DEFAULTS = {
     SETTING_RESERVE: 10.0,
     SETTING_WEAR: 5.0,  # c/kWh
     SETTING_EV_SOC: 50.0,
-    SETTING_EV_CAPACITY: 37.0,
+    SETTING_EV_CAPACITY: 64.7,  # MINI Countryman SE ALL4 (U25) usable
     SETTING_IMPORT_LIMIT: 14.0,
     SETTING_PEAK_START: "16:00",
     SETTING_ALLOW_SELL: True,

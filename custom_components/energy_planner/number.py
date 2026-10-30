@@ -5,7 +5,6 @@ from homeassistant.components.number import NumberMode, RestoreNumber
 from homeassistant.const import PERCENTAGE, UnitOfEnergy, UnitOfPower
 
 from .const import (
-    CONF_EV_SOC,
     DOMAIN,
     SETTING_BATTERY_TARGET,
     SETTING_EV_CAPACITY,
@@ -31,10 +30,10 @@ NUMBERS = [
 async def async_setup_entry(hass, entry, async_add_entities):
     coordinator = hass.data[DOMAIN][entry.entry_id]
     entities = [SettingNumber(coordinator, *n) for n in NUMBERS]
-    if not coordinator.conf(CONF_EV_SOC):
-        entities.append(
-            SettingNumber(coordinator, SETTING_EV_SOC, "EV state of charge", 0, 100, 1, PERCENTAGE, "mdi:car-electric-outline")
-        )
+    # Used only while the car's own SoC sensor is unavailable.
+    entities.append(
+        SettingNumber(coordinator, SETTING_EV_SOC, "EV state of charge (manual)", 0, 100, 1, PERCENTAGE, "mdi:car-electric-outline")
+    )
     async_add_entities(entities)
 
 

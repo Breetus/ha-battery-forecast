@@ -28,8 +28,10 @@ cards:
       - entity: sensor.energy_planner_battery_at_peak
         name: Battery expected at peak
       - entity: number.energy_planner_ev_target_at_peak
-      - entity: number.energy_planner_ev_state_of_charge
-        name: EV state of charge now (set when you plug in)
+      - entity: sensor.wmw52ga0507r62550_battery_hv_state_of_charge
+        name: Car state of charge now
+      - entity: sensor.wmw52ga0507r62550_battery_ev_target_state_of_charge
+        name: Charge limit set in the car
       - entity: sensor.energy_planner_ev_at_peak
         name: EV expected at peak
       - entity: sensor.energy_planner_plan_cost
@@ -43,6 +45,8 @@ cards:
       - entity: number.energy_planner_battery_wear_cost
       - entity: number.energy_planner_grid_import_limit
       - entity: number.energy_planner_ev_battery_size
+      - entity: number.energy_planner_ev_state_of_charge_manual
+        name: Car SoC if its sensor is unavailable
   - type: custom:apexcharts-card
     header:
       show: true

@@ -10,10 +10,11 @@ forecasts, and carries out the commands.
 
 Every 5 minutes, and at the start of each half hour, it:
 
-1. Reads Amber import and feed-in prices (from PowerSync's Amber data), the
-   Solcast solar forecast (from PowerSync), the house load profile (hourly
-   averages from the last 14 days of recorder statistics, with the EV charger
-   taken out), the battery SoC and the EV state.
+1. Reads Amber import and feed-in prices (PowerSync's Amber data, falling
+   back to the Amber Express sensors), the Solcast forecast (PowerSync's copy,
+   falling back to the Solcast sensors), a half-hourly house load profile from
+   the last 10 days of history (the house load sensor doesn't include the
+   car), the battery SoC, and the car's SoC and charge limit from CarData.
 2. Plans the next ~40 hours in half-hour slots. In each slot it picks one
    battery mode (normal, hold, force charge at 2.5/5/7.5/10 kW, or force
    discharge at those powers) and one EV charge level (off, 6 A, 16 A, 32 A).
@@ -55,8 +56,8 @@ leaves the charger alone until the car is unplugged.
 | `select.energy_planner_mode` | Auto or Plan only (starts in Plan only) |
 | `time.energy_planner_peak_price_starts` | The deadline for the targets |
 | `number.energy_planner_battery_target_at_peak` | Battery % wanted at the peak |
-| `number.energy_planner_ev_target_at_peak` | Car % wanted at the peak |
-| `number.energy_planner_ev_state_of_charge` | The car's SoC. There is no car SoC sensor, so set it when you plug in; it then counts up from charger power |
+| `number.energy_planner_ev_target_at_peak` | Car % wanted at the peak (capped at the charge limit set in the car) |
+| `number.energy_planner_ev_state_of_charge_manual` | Car SoC to use while the MINI's CarData SoC sensor is unavailable; it counts up from charger power |
 | `number.energy_planner_ev_battery_size` | Usable car battery, kWh |
 | `number.energy_planner_battery_reserve` | Never plan below this % |
 | `number.energy_planner_battery_wear_cost` | c/kWh charged for every kWh taken out of the battery |
