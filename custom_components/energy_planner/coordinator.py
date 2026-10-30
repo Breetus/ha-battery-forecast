@@ -120,6 +120,9 @@ class EnergyPlannerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._unsubs.append(async_track_state_change_event(self.hass, watched, self._charger_changed))
         if status:
             self._unsubs.append(async_track_state_change_event(self.hass, [status], self._connector_changed))
+        soc_entity = self.conf(CONF_BATTERY_SOC)
+        if soc_entity:
+            self._unsubs.append(async_track_state_change_event(self.hass, [soc_entity], self._soc_changed))
         mode_entity = self.conf(CONF_BATTERY_MODE)
         if mode_entity:
             self._unsubs.append(async_track_state_change_event(self.hass, [mode_entity], self._battery_mode_changed))
@@ -190,6 +193,19 @@ class EnergyPlannerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if new is not None and new.state not in PLUGGED_STATES and self._ev_manual:
             self._ev_manual = False
         self.hass.async_create_task(self.async_request_refresh())
+
+    @callback
+    def _soc_changed(self, event: Event) -> None:
+        """Stop a sale promptly when the battery reaches the reserve."""
+        soc = _num(getattr(event.data.get("new_state"), "state", None))
+        last = self._last_battery
+        if (
+            soc is not None
+            and last is not None
+            and last.mode == "discharge"
+            and soc <= float(self.settings[SETTING_RESERVE])
+        ):
+            self.hass.async_create_task(self.async_request_refresh())
 
     @callback
     def _battery_mode_changed(self, event: Event) -> None:
@@ -446,6 +462,8 @@ class EnergyPlannerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             remaining_minutes=_num(mode_state.attributes.get("remaining_minutes")) if mode_state else None,
             house_hold_active=hold is not None and hold.state == "on",
             ev_charging=self._ev_power_kw > 1.0 or _kw(self.hass.states.get(self.conf(CONF_EV_POWER) or "")) > 1.0,
+            soc_pct=self._float_state(self.conf(CONF_BATTERY_SOC)),
+            reserve_pct=float(self.settings[SETTING_RESERVE]),
         )
         decision = decide_battery(step, state, self._last_battery, now)
         if not auto:
@@ -458,9 +476,9 @@ class EnergyPlannerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             except Exception as err:  # noqa: BLE001 - retried on the next update
                 _LOGGER.warning("PowerSync %s failed: %s", cmd.service, err)
                 return f"{decision.status} (PowerSync refused: {err})", decision.override
-            same = self._last_battery and self._last_battery.mode == step.mode
+            same = self._last_battery and self._last_battery.mode == decision.mode
             self._battery_attempts = self._battery_attempts + 1 if same else 1
-            self._last_battery = LastCommand(step.mode, step.power_kw, now, self._battery_attempts)
+            self._last_battery = LastCommand(decision.mode, decision.power_kw, now, self._battery_attempts)
             await self._save()
             _LOGGER.info("Sent PowerSync %s %s", cmd.service, cmd.data)
         status = decision.status

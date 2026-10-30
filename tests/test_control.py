@@ -83,3 +83,32 @@ def test_ev_off_when_not_planned():
 def test_ev_untouched_when_unplugged():
     d = decide_ev(_step(ev=7.4), EvState(False, False, 16))
     assert d.switch_on is None and d.current_a is None
+
+
+def test_holds_at_the_reserve_instead_of_draining_to_the_inverter_minimum():
+    state = BatteryState("normal", None, False, False, soc_pct=10.2, reserve_pct=10)
+    d = decide_battery(_step("normal"), state, None, NOW)
+    assert d.commands[0].service == "hold_battery_soc"
+    assert d.mode == "hold" and "reserve" in d.status
+
+
+def test_reserve_hold_releases_with_hysteresis():
+    last = LastCommand("hold", 0, NOW - timedelta(minutes=10))
+    # 11% is still inside the release margin: keep holding.
+    d = decide_battery(_step("normal"), BatteryState("hold_soc", 20, False, False, 11.0, 10), last, NOW)
+    assert d.commands == []
+    # 12.5% is clear of it: back to normal.
+    d = decide_battery(_step("normal"), BatteryState("hold_soc", 20, False, False, 12.5, 10), last, NOW)
+    assert d.commands[0].service == "restore_normal"
+
+
+def test_normal_above_reserve_is_untouched():
+    d = decide_battery(_step("normal"), BatteryState("normal", None, False, False, 40.0, 10), None, NOW)
+    assert d.commands == []
+
+
+def test_sale_stops_at_the_reserve():
+    last = LastCommand("discharge", 10.0, NOW - timedelta(minutes=3))
+    state = BatteryState("force_discharge", 25, False, False, soc_pct=9.8, reserve_pct=10)
+    d = decide_battery(_step("discharge", 10.0), state, last, NOW)
+    assert d.commands[0].service == "hold_battery_soc"

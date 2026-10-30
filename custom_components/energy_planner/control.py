@@ -29,6 +29,10 @@ REFRESH_BELOW_MINUTES = 10
 # How long PowerSync gets to show a command in its battery_mode sensor before
 # a mismatch counts as a failed command rather than "still applying".
 CONFIRM_SECONDS = 120
+# The inverter's own floor is lower than the planner's reserve, so at the
+# reserve a "normal" step becomes a hold. Released this far above the reserve.
+RESERVE_RELEASE_PCT = 2.0
+
 # Ignore power changes smaller than this, so the inverter isn't re-commanded
 # for every small change in the plan.
 POWER_DEADBAND_KW = 1.0
@@ -46,6 +50,8 @@ class BatteryState:
     remaining_minutes: float | None
     house_hold_active: bool  # the EV grid-only rule is holding the battery
     ev_charging: bool  # the car is drawing power right now
+    soc_pct: float | None = None
+    reserve_pct: float | None = None
 
 
 @dataclass
@@ -61,6 +67,8 @@ class BatteryDecision:
     commands: list[Command]
     status: str  # what the controller is doing, for the dashboard
     override: bool = False  # a manual PowerSync command is in charge
+    mode: str = ""  # the planner mode the commands put the battery in
+    power_kw: float = 0.0
 
 
 def manual_override(state: BatteryState, last: LastCommand | None, now: datetime) -> bool:
@@ -90,6 +98,15 @@ def decide_battery(step: Step, state: BatteryState, last: LastCommand | None, no
         # The house rule holds the battery while the car charges; leave it be.
         return BatteryDecision([], "Normal (battery held while the car charges)")
 
+    at_reserve = False
+    if mode in (MODE_NORMAL, MODE_DISCHARGE) and state.soc_pct is not None and state.reserve_pct is not None:
+        held = last is not None and last.mode == MODE_HOLD and state.ps_mode == PS_HOLD
+        margin = RESERVE_RELEASE_PCT if held else 0.5
+        if mode == MODE_DISCHARGE:
+            margin = 0.0  # a sale runs right down to the reserve
+        if state.soc_pct <= state.reserve_pct + margin:
+            mode, power, at_reserve = MODE_HOLD, 0.0, True
+
     target = PS_MODE_FOR[mode]
     current = state.ps_mode
     pending = (
@@ -102,10 +119,10 @@ def decide_battery(step: Step, state: BatteryState, last: LastCommand | None, no
     if mode == MODE_NORMAL:
         if current in (PS_NORMAL, None) or pending:
             return BatteryDecision([], "Normal")
-        return BatteryDecision([Command("restore_normal")], "Returning to normal")
+        return BatteryDecision([Command("restore_normal")], "Returning to normal", mode=MODE_NORMAL)
 
     label = {
-        MODE_HOLD: "Holding charge",
+        MODE_HOLD: "Holding at the reserve" if at_reserve else "Holding charge",
         MODE_CHARGE: f"Charging from grid at {power:g} kW",
         MODE_DISCHARGE: f"Selling to grid at {power:g} kW",
     }[mode]
@@ -123,7 +140,7 @@ def decide_battery(step: Step, state: BatteryState, last: LastCommand | None, no
         cmd = Command("force_charge", {"duration": str(COMMAND_MINUTES), "power_w": int(power * 1000)})
     else:
         cmd = Command("force_discharge", {"duration": str(COMMAND_MINUTES), "power_w": int(power * 1000)})
-    return BatteryDecision([cmd], label)
+    return BatteryDecision([cmd], label, mode=mode, power_kw=power)
 
 
 @dataclass
