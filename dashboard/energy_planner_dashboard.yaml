@@ -10,6 +10,7 @@ views:
         entities:
           - entity: select.energy_planner_mode
           - entity: sensor.energy_planner_status
+          - entity: binary_sensor.energy_planner_plan_blocked
           - type: attribute
             entity: sensor.energy_planner_status
             attribute: ev

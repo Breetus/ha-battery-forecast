@@ -66,6 +66,11 @@ def parse_amber(intervals: list[dict]) -> tuple[list[Interval], list[Interval]]:
             advanced = item.get("advancedPrice")
             if item.get("type") == "ForecastInterval" and isinstance(advanced, dict):
                 price = advanced.get("predicted", price)
+                if item.get("spikeStatus") in ("potential", "spike"):
+                    # Plan on the dear end of a flagged spike: the high import
+                    # price, and the low (most negative, best-paid) feed-in.
+                    edge = "low" if item.get("channelType") == "feedIn" else "high"
+                    price = advanced.get(edge, price)
             if price is None:
                 continue
             price = float(price) / 100
@@ -207,8 +212,8 @@ def build_slots(
 ) -> list[Slot]:
     """Build slots from now until the end of the price forecast.
 
-    The first slot runs from now to the next slot boundary, so the plan always
-    describes the present moment.
+    The first slot runs from now to the end of the current 5-minute price (or
+    the next slot boundary), so the plan always describes the present moment.
     """
     imports = _dedupe(imports)
     exports = _dedupe(exports)
@@ -217,10 +222,23 @@ def build_slots(
     horizon_end = min(imports[-1].end, now + timedelta(hours=horizon_hours))
     step = timedelta(minutes=slot_minutes)
     local_now = now.astimezone(tz)
-    midnight = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
-    boundary = midnight + step * (int((local_now - midnight) / step) + 1)
+
+    def next_boundary(t: datetime) -> datetime:
+        midnight = t.replace(hour=0, minute=0, second=0, microsecond=0)
+        return midnight + step * (int((t - midnight) / step) + 1)
+
+    boundary = next_boundary(local_now)
     if (boundary - local_now) < timedelta(minutes=min_first_minutes):
         boundary += step
+    # The live 5-minute price gets a slot of its own, so a spike isn't diluted
+    # across the half hour.
+    current = [
+        i.end
+        for i in imports + exports
+        if i.start <= now < i.end and i.end - i.start <= timedelta(minutes=10) and i.end - now >= timedelta(seconds=30)
+    ]
+    if current:
+        boundary = min(min(current).astimezone(tz), boundary)
     slots = []
     start = local_now
     while start < horizon_end:
@@ -241,7 +259,7 @@ def build_slots(
                 load_kw=round(load_profile_kw(load_profile, mid.astimezone(tz)), 3),
             )
         )
-        start, boundary = end, end + step
+        start, boundary = end, next_boundary(end)
     return slots
 
 

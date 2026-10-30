@@ -46,6 +46,32 @@ Grid import (house + battery charging + car) is kept under the grid import
 limit (14 kW by default), which also keeps the Ocular charger's own load
 management from throttling the car.
 
+## Price spikes
+
+The live 5-minute Amber price is a slot of its own at the start of every plan,
+and the planner re-plans as soon as PowerSync's current price changes, so an
+unforecast feed-in spike is sold into within about a minute and the selling
+stops when it ends. Forecast intervals that Amber flags as a potential spike
+are planned on the dear end of Amber's range (high import, best feed-in), so
+the battery is kept ready for them.
+
+## Alerts
+
+In Auto, if the plan can't be carried out for about 15 minutes (three
+retries), a notification goes to `notify.mobile_app_poco_x3_gt`, once per
+incident, with a second "Sorted now" message when it clears. It covers:
+
+- PowerSync in a mode the planner didn't ask for (your own manual command,
+  another automation, the app), except the EV grid-only hold.
+- PowerSync not accepting the planner's command.
+- The battery not following a forced charge, sale or hold (checked from the
+  SoC over 10 minutes).
+- The car not charging when planned: the charger switch stays off, the car
+  draws nothing (check the car's own timer), or the charger was changed by hand.
+
+`binary_sensor.energy_planner_plan_blocked` is on while an alert is active.
+Nothing is sent in Plan only.
+
 ## Manual control
 
 PowerSync's own force charge, force discharge, hold and restore buttons keep

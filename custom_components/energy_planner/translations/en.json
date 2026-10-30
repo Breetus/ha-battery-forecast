@@ -23,7 +23,8 @@
           "battery_max_power_kw": "Battery maximum charge/discharge power",
           "export_limit_kw": "Grid export limit",
           "charger_voltage": "Charger voltage",
-          "charger_max_current": "Charger maximum current"
+          "charger_max_current": "Charger maximum current",
+          "notify_service": "Phone alert service when the plan can't be carried out (e.g. notify.mobile_app_poco_x3_gt)"
         }
       }
     },
@@ -54,7 +55,8 @@
           "battery_max_power_kw": "Battery maximum charge/discharge power",
           "export_limit_kw": "Grid export limit",
           "charger_voltage": "Charger voltage",
-          "charger_max_current": "Charger maximum current"
+          "charger_max_current": "Charger maximum current",
+          "notify_service": "Phone alert service when the plan can't be carried out (e.g. notify.mobile_app_poco_x3_gt)"
         }
       }
     }

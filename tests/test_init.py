@@ -165,3 +165,72 @@ async def test_uses_car_soc_and_charge_limit(hass):
     await hass.async_block_till_done()
     assert hass.states.get("sensor.energy_planner_status").attributes["ev_soc_used"] == 70
     assert float(hass.states.get("sensor.energy_planner_ev_at_peak").state) <= 75.5
+
+
+async def test_alerts_phone_when_plan_is_blocked(hass, freezer):
+    entry, calls = await _setup(hass)
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+    notify = async_mock_service(hass, "notify", "mobile_app_poco_x3_gt")
+    await hass.services.async_call(
+        "select", "select_option", {"entity_id": "select.energy_planner_mode", "option": "Auto"}, blocking=True
+    )
+    await hass.async_block_till_done()
+    assert calls["force_charge"]
+    # Something else forces a discharge and keeps it there.
+    hass.states.async_set("sensor.power_sync_battery_mode", "force_discharge", {"remaining_minutes": 60})
+    await hass.async_block_till_done()
+    for _ in range(4):
+        freezer.tick(timedelta(minutes=5, seconds=10))
+        await coordinator.async_refresh()
+        await hass.async_block_till_done()
+    assert len(notify) == 1
+    assert "force_discharge" in notify[0].data["message"]
+    assert hass.states.get("binary_sensor.energy_planner_plan_blocked").state == "on"
+    # It clears, and says so once.
+    hass.states.async_set("sensor.power_sync_battery_mode", "normal")
+    await hass.async_block_till_done()
+    freezer.tick(timedelta(minutes=5, seconds=10))
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
+    assert len(notify) == 2 and notify[1].data["message"].startswith("Sorted now")
+    assert hass.states.get("binary_sensor.energy_planner_plan_blocked").state == "off"
+
+
+async def test_no_alerts_in_plan_only(hass, freezer):
+    entry, _ = await _setup(hass)
+    notify = async_mock_service(hass, "notify", "mobile_app_poco_x3_gt")
+    hass.states.async_set("sensor.power_sync_battery_mode", "force_discharge", {"remaining_minutes": 60})
+    for _ in range(5):
+        freezer.tick(timedelta(minutes=5, seconds=10))
+        await hass.data[DOMAIN][entry.entry_id].async_refresh()
+        await hass.async_block_till_done()
+    assert not notify
+
+
+async def test_sells_into_a_live_price_spike(hass):
+    entry, calls = await _setup(hass)
+    hass.states.async_set("sensor.power_sync_battery_level", "90", {"unit_of_measurement": "%"})
+    await hass.services.async_call(
+        "select", "select_option", {"entity_id": "select.energy_planner_mode", "option": "Auto"}, blocking=True
+    )
+    await hass.async_block_till_done()
+    # An unforecast 5-minute spike: feed-in pays $10/kWh right now.
+    now = dt_util.utcnow()
+    start = now.replace(minute=now.minute - now.minute % 5, second=0, microsecond=0)
+    spike = {
+        "type": "CurrentInterval",
+        "channelType": "feedIn",
+        "startTime": (start + timedelta(seconds=1)).isoformat(),
+        "endTime": (start + timedelta(minutes=5)).isoformat(),
+        "perKwh": -1000.0,
+    }
+    ps = hass.data["power_sync"][next(iter(hass.data["power_sync"]))]["amber_coordinator"]
+    ps.data = {**ps.data, "current": [spike]}
+    async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=15))  # past the refresh cooldown
+    hass.states.async_set("sensor.power_sync_current_export_price", "10.0")
+    await hass.async_block_till_done()
+    async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=30))
+    await hass.async_block_till_done()
+    plan_now = hass.states.get("sensor.energy_planner_plan_now")
+    assert plan_now.state.startswith("Sell"), plan_now.state
+    assert calls["force_discharge"]

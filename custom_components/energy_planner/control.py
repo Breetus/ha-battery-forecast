@@ -69,6 +69,7 @@ class BatteryDecision:
     override: bool = False  # a manual PowerSync command is in charge
     mode: str = ""  # the planner mode the commands put the battery in
     power_kw: float = 0.0
+    target: str = ""  # the mode the battery should be in now (after the house rules)
 
 
 def manual_override(state: BatteryState, last: LastCommand | None, now: datetime) -> bool:
@@ -97,7 +98,7 @@ def decide_battery(step: Step, state: BatteryState, last: LastCommand | None, no
     car_hold = False
     if mode == MODE_NORMAL and state.house_hold_active:
         # The house EV rule is holding the battery while the car charges.
-        return BatteryDecision([], "Normal (battery held while the car charges)")
+        return BatteryDecision([], "Normal (battery held while the car charges)", target=MODE_HOLD)
     if mode == MODE_NORMAL and state.ev_charging:
         # The battery never feeds the car. The house rule only starts its hold
         # from normal, so after one of our commands we hold it ourselves.
@@ -124,8 +125,8 @@ def decide_battery(step: Step, state: BatteryState, last: LastCommand | None, no
 
     if mode == MODE_NORMAL:
         if current in (PS_NORMAL, None) or pending:
-            return BatteryDecision([], "Normal")
-        return BatteryDecision([Command("restore_normal")], "Returning to normal", mode=MODE_NORMAL)
+            return BatteryDecision([], "Normal", target=MODE_NORMAL)
+        return BatteryDecision([Command("restore_normal")], "Returning to normal", mode=MODE_NORMAL, target=MODE_NORMAL)
 
     label = {
         MODE_HOLD: "Holding at the reserve"
@@ -138,9 +139,9 @@ def decide_battery(step: Step, state: BatteryState, last: LastCommand | None, no
     running = current == target and (mode == MODE_HOLD or same_power)
     remaining = state.remaining_minutes
     if running and (remaining is None or remaining > REFRESH_BELOW_MINUTES):
-        return BatteryDecision([], label)
+        return BatteryDecision([], label, target=mode, power_kw=power)
     if pending:
-        return BatteryDecision([], label)
+        return BatteryDecision([], label, target=mode, power_kw=power)
 
     if mode == MODE_HOLD:
         cmd = Command("hold_battery_soc", {"duration": COMMAND_MINUTES})
@@ -148,7 +149,7 @@ def decide_battery(step: Step, state: BatteryState, last: LastCommand | None, no
         cmd = Command("force_charge", {"duration": str(COMMAND_MINUTES), "power_w": int(power * 1000)})
     else:
         cmd = Command("force_discharge", {"duration": str(COMMAND_MINUTES), "power_w": int(power * 1000)})
-    return BatteryDecision([cmd], label, mode=mode, power_kw=power)
+    return BatteryDecision([cmd], label, mode=mode, power_kw=power, target=mode)
 
 
 @dataclass

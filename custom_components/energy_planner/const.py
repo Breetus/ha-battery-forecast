@@ -4,7 +4,7 @@ from __future__ import annotations
 DOMAIN = "energy_planner"
 POWERSYNC_DOMAIN = "power_sync"
 
-PLATFORMS = ["select", "number", "switch", "time", "sensor"]
+PLATFORMS = ["select", "number", "switch", "time", "sensor", "binary_sensor"]
 
 UPDATE_MINUTES = 5
 
@@ -21,6 +21,7 @@ CONF_CHARGER_CURRENT = "charger_current_entity"
 CONF_CHARGER_STATUS = "charger_status_entity"
 CONF_HOUSE_HOLD = "house_hold_entity"
 CONF_PRICE_ENTITY = "price_forecast_entity"
+CONF_NOTIFY = "notify_service"
 CONF_FEED_IN_ENTITY = "feed_in_forecast_entity"
 CONF_SOLAR_ENTITIES = "solar_forecast_entities"
 CONF_BATTERY_CAPACITY = "battery_capacity_kwh"
@@ -41,6 +42,7 @@ DEFAULTS = {
     CONF_CHARGER_CURRENT: "number.charger_maximum_current",
     CONF_CHARGER_STATUS: "sensor.charger_status_connector",
     CONF_HOUSE_HOLD: "input_boolean.ev_grid_only_hold_active",
+    CONF_NOTIFY: "notify.mobile_app_poco_x3_gt",
     CONF_PRICE_ENTITY: "sensor.amber_express_home_general_price",
     CONF_FEED_IN_ENTITY: "sensor.amber_express_home_feed_in_price",
     CONF_SOLAR_ENTITIES: "sensor.solcast_pv_forecast_forecast_today, sensor.solcast_pv_forecast_forecast_tomorrow, sensor.solcast_pv_forecast_forecast_day_3",

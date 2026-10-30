@@ -33,6 +33,7 @@ from .const import (
     CONF_LOAD,
     CONF_LOAD_INCLUDES_EV,
     CONF_MAX_POWER,
+    CONF_NOTIFY,
     CONF_PRICE_ENTITY,
     CONF_SOLAR_ENTITIES,
     DEFAULTS,
@@ -57,8 +58,9 @@ from .const import (
     SETTING_WEAR,
     UPDATE_MINUTES,
 )
-from .control import BatteryState, EvState, LastCommand, decide_battery, decide_ev
-from .planner import Params, Plan, plan
+from .control import PS_MODE_FOR, BatteryState, EvState, LastCommand, decide_battery, decide_ev
+from .planner import Params, Plan, Step, plan
+from .watchdog import ResponseTracker, Watchdog
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -90,6 +92,9 @@ class EnergyPlannerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._ev_energy_at: datetime | None = None
         self._ev_power_kw = 0.0
         self._unsubs: list = []
+        self._watchdog = Watchdog()
+        self._response = ResponseTracker()
+        self._battery_error: str | None = None
         self._boundary_unsub = None
 
     # ----- configuration -------------------------------------------------
@@ -120,6 +125,18 @@ class EnergyPlannerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._unsubs.append(async_track_state_change_event(self.hass, watched, self._charger_changed))
         if status:
             self._unsubs.append(async_track_state_change_event(self.hass, [status], self._connector_changed))
+        prices = [
+            e
+            for e in (
+                "sensor.power_sync_current_import_price",
+                "sensor.power_sync_current_export_price",
+                self.conf(CONF_PRICE_ENTITY),
+                self.conf(CONF_FEED_IN_ENTITY),
+            )
+            if e
+        ]
+        # Re-plan as soon as the live price moves, so a spike is used while it lasts.
+        self._unsubs.append(async_track_state_change_event(self.hass, prices, self._price_changed))
         soc_entity = self.conf(CONF_BATTERY_SOC)
         if soc_entity:
             self._unsubs.append(async_track_state_change_event(self.hass, [soc_entity], self._soc_changed))
@@ -192,6 +209,13 @@ class EnergyPlannerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         new = event.data.get("new_state")
         if new is not None and new.state not in PLUGGED_STATES and self._ev_manual:
             self._ev_manual = False
+        self.hass.async_create_task(self.async_request_refresh())
+
+    @callback
+    def _price_changed(self, event: Event) -> None:
+        old, new = event.data.get("old_state"), event.data.get("new_state")
+        if old is not None and new is not None and old.state == new.state:
+            return  # attribute-only change
         self.hass.async_create_task(self.async_request_refresh())
 
     @callback
@@ -406,6 +430,11 @@ class EnergyPlannerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             ev_status = await self._drive_ev(result, voltage, max_a, auto, control_ev)
         elif problems:
             battery_status = "Not planning: " + ", ".join(problems)
+        if auto and result and result.first:
+            await self._check_plan_followed(result.first, now, soc, control_ev)
+        else:
+            self._watchdog.clear()
+            self._response.reset()
 
         self._schedule_boundary(slots)
         return {
@@ -467,6 +496,8 @@ class EnergyPlannerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             reserve_pct=float(self.settings[SETTING_RESERVE]),
         )
         decision = decide_battery(step, state, self._last_battery, now)
+        self._battery_decision, self._battery_state = decision, state
+        self._battery_error = None
         if not auto:
             return f"Plan only: {decision.status}", decision.override
         for cmd in decision.commands:
@@ -476,6 +507,7 @@ class EnergyPlannerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 )
             except Exception as err:  # noqa: BLE001 - retried on the next update
                 _LOGGER.warning("PowerSync %s failed: %s", cmd.service, err)
+                self._battery_error = f"PowerSync refused {cmd.service}: {err}"
                 return f"{decision.status} (PowerSync refused: {err})", decision.override
             same = self._last_battery and self._last_battery.mode == decision.mode
             self._battery_attempts = self._battery_attempts + 1 if same else 1
@@ -500,6 +532,7 @@ class EnergyPlannerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             current_a=current,
         )
         decision = decide_ev(result.first, state, voltage, max_a=max_a)
+        self._ev_state = state
         if not auto:
             return f"Plan only: {decision.status}"
         try:
@@ -523,6 +556,101 @@ class EnergyPlannerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             _LOGGER.warning("Charger command failed: %s", err)
             return f"{decision.status} (charger refused: {err})"
         return decision.status
+
+    # ----- is the plan being carried out? ---------------------------------
+
+    async def _check_plan_followed(self, step: Step, now: datetime, soc: float | None, control_ev: bool) -> None:
+        """Alert the phone when the plan can't be carried out for a while."""
+        from .sensor import describe
+
+        problems: dict[str, str] = {}
+        wanted = describe(step)
+        decision = getattr(self, "_battery_decision", None)
+        state = getattr(self, "_battery_state", None)
+        if decision is not None and state is not None:
+            if decision.override:
+                who = self._powersync_source(state.ps_mode)
+                problems["override"] = (
+                    f"The plan is '{wanted}', but PowerSync is in {state.ps_mode}{who}, "
+                    "which the planner didn't ask for, so it is standing aside."
+                )
+            elif self._battery_error:
+                problems["refused"] = f"The plan is '{wanted}', but {self._battery_error}."
+            elif decision.commands and self._battery_attempts >= 3:
+                problems["refused"] = (
+                    f"PowerSync hasn't taken the planner's command ({decision.status.lower()}) after "
+                    f"{self._battery_attempts} tries; it still shows {state.ps_mode}."
+                )
+            target_ps = PS_MODE_FOR.get(decision.target)
+            if decision.target in ("charge", "discharge", "hold") and state.ps_mode == target_ps:
+                issue = self._response.problem(
+                    decision.target, decision.power_kw, now, soc, float(self.conf(CONF_BATTERY_CAPACITY))
+                )
+                if issue:
+                    problems["response"] = issue
+            else:
+                self._response.reset()
+
+        ev = getattr(self, "_ev_state", None)
+        if control_ev and step.ev_kw > 0.05 and self._ev_plugged():
+            if self._ev_manual:
+                problems["ev_manual"] = (
+                    "The plan wants to charge the car, but the charger was changed by hand, "
+                    "so the planner is leaving it alone until the car is unplugged."
+                )
+            elif ev is not None and ev.switch_on is False:
+                problems["ev_switch"] = "The plan wants to charge the car, but the charger's switch stays off."
+            elif self._ev_power_kw < 1.0:
+                problems["ev_power"] = (
+                    "The charger is on for the car, but the car isn't drawing power. "
+                    "Check the car's own charging timer or charge limit."
+                )
+
+        alerts, resolved = self._watchdog.update(now, problems)
+        for message in alerts:
+            await self._notify(message)
+        for message in resolved:
+            await self._notify(f"Sorted now: {message}")
+        if alerts or resolved:
+            self.async_update_listeners()
+
+    def _powersync_source(self, ps_mode: str | None) -> str:
+        """' (started from the app/dashboard)' etc., when PowerSync records who started it."""
+        key = {"force_charge": "force_charge_state", "force_discharge": "force_discharge_state", "hold_soc": "hold_soc_state"}.get(
+            ps_mode or ""
+        )
+        if not key:
+            return ""
+        for entry in self.hass.config_entries.async_entries(POWERSYNC_DOMAIN):
+            runtime = self.hass.data.get(POWERSYNC_DOMAIN, {}).get(entry.entry_id)
+            if isinstance(runtime, dict) and isinstance(runtime.get(key), dict):
+                source = runtime[key].get("source")
+                if source in ("user", "manual"):
+                    return " (started by you)"
+                if source:
+                    return f" (started by {source})"
+        return ""
+
+    async def _notify(self, message: str) -> None:
+        target = str(self.conf(CONF_NOTIFY) or "")
+        if "." not in target:
+            return
+        domain, service = target.split(".", 1)
+        try:
+            await self.hass.services.async_call(
+                domain, service, {"title": "Energy Planner", "message": message}, blocking=False, context=self._context()
+            )
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.warning("Could not send the alert through %s: %s", target, err)
+
+    def blocked(self) -> list[str]:
+        return self._watchdog.blocked()
+
+    def incidents(self) -> list[dict]:
+        return [
+            {"problem": i.message, "since": i.since.isoformat(), "alerted": i.alerted}
+            for i in self._watchdog.incidents.values()
+        ]
 
     def plan_attributes(self) -> dict[str, Any]:
         data = self.data or {}

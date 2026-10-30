@@ -61,10 +61,12 @@ def test_build_slots_first_slot_is_partial_and_uses_5min_price():
     imports, exports = fc.parse_amber(raw)
     now = t + timedelta(minutes=12)
     slots = fc.build_slots(now, imports, exports, [], [1.0] * 48, BNE)
-    assert abs(slots[0].hours - 18 / 60) < 1e-6
-    # 3 min at 50c in the 5-min actual (10:12-10:15), then 15 min at 20c.
-    assert abs(slots[0].import_price - (3 * 0.50 + 15 * 0.20) / 18) < 1e-6
-    assert slots[1].start == t + timedelta(minutes=30)
+    # The live 5-minute price gets its own slot (10:12-10:15), undiluted.
+    assert abs(slots[0].hours - 3 / 60) < 1e-6
+    assert abs(slots[0].import_price - 0.50) < 1e-6
+    assert slots[1].start == t + timedelta(minutes=15)
+    assert abs(slots[1].import_price - 0.20) < 1e-6
+    assert slots[2].start == t + timedelta(minutes=30)
     assert slots[-1].start + timedelta(hours=slots[-1].hours) == t + timedelta(hours=3)
 
 
@@ -106,3 +108,16 @@ def test_parse_solar_cautious_estimate():
     assert fc.parse_solar([item], key="pv_estimate10")[0].value == 2.0
     # Falls back to the median when the percentile is missing.
     assert fc.parse_solar([{"period_start": "2026-10-30T01:30:00+00:00", "pv_estimate": 4.2}], key="pv_estimate10")[0].value == 4.2
+
+
+def test_flagged_spike_plans_on_the_dear_edge():
+    t = datetime(2026, 10, 30, 17, 0, tzinfo=BNE)
+    general = _amber(t, 30, "general", 30.0, predicted=30.0)
+    general["advancedPrice"]["high"] = 200.0
+    general["spikeStatus"] = "potential"
+    feed_in = _amber(t, 30, "feedIn", -20.0, predicted=-20.0)
+    feed_in["advancedPrice"]["low"] = -180.0
+    feed_in["spikeStatus"] = "potential"
+    imports, exports = fc.parse_amber([general, feed_in])
+    assert abs(imports[0].value - 2.00) < 1e-9
+    assert abs(exports[0].value - 1.80) < 1e-9

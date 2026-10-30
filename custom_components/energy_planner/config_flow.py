@@ -24,6 +24,7 @@ from .const import (
     CONF_LOAD,
     CONF_LOAD_INCLUDES_EV,
     CONF_MAX_POWER,
+    CONF_NOTIFY,
     CONF_PRICE_ENTITY,
     CONF_SOLAR_ENTITIES,
     DEFAULTS,
@@ -66,6 +67,7 @@ def _schema(values: dict) -> vol.Schema:
         opt(CONF_PRICE_ENTITY, _ENTITY),
         opt(CONF_FEED_IN_ENTITY, _ENTITY),
         opt(CONF_SOLAR_ENTITIES, _TEXT),
+        opt(CONF_NOTIFY, _TEXT),
         req(CONF_BATTERY_CAPACITY, _num(1, 200, 0.1, "kWh")),
         req(CONF_MAX_POWER, _num(1, 50, 0.5, "kW")),
         req(CONF_EXPORT_LIMIT, _num(0, 50, 0.5, "kW")),
@@ -95,7 +97,7 @@ class EnergyPlannerOptionsFlow(config_entries.OptionsFlow):
     async def async_step_init(self, user_input=None):
         if user_input is not None:
             # Fields left empty are dropped by the form; record them as cleared.
-            cleared = {k: "" for k in (CONF_EV_SOC, CONF_EV_LIMIT, CONF_PRICE_ENTITY, CONF_FEED_IN_ENTITY, CONF_SOLAR_ENTITIES) if k not in user_input}
+            cleared = {k: "" for k in (CONF_NOTIFY, CONF_EV_SOC, CONF_EV_LIMIT, CONF_PRICE_ENTITY, CONF_FEED_IN_ENTITY, CONF_SOLAR_ENTITIES) if k not in user_input}
             return self.async_create_entry(data={**cleared, **user_input})
         current = {**self.config_entry.data, **self.config_entry.options}
         return self.async_show_form(step_id="init", data_schema=_schema(current))
