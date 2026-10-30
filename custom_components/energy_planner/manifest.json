@@ -1,0 +1,13 @@
+{
+  "domain": "energy_planner",
+  "name": "Energy Planner",
+  "after_dependencies": ["power_sync", "recorder"],
+  "codeowners": ["@Breetus"],
+  "config_flow": true,
+  "dependencies": ["recorder"],
+  "documentation": "https://github.com/Breetus/ha-battery-forecast",
+  "iot_class": "calculated",
+  "issue_tracker": "https://github.com/Breetus/ha-battery-forecast/issues",
+  "requirements": ["numpy"],
+  "version": "0.1.0"
+}

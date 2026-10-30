@@ -1,0 +1,81 @@
+from datetime import datetime, timedelta, timezone
+
+from custom_components.energy_planner import forecast as fc
+
+from .helpers import BNE
+
+
+def _amber(start, minutes, channel, cents, kind="ForecastInterval", predicted=None):
+    item = {
+        "type": kind,
+        "channelType": channel,
+        "startTime": (start + timedelta(seconds=1)).astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "endTime": (start + timedelta(minutes=minutes)).astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "perKwh": cents,
+    }
+    if predicted is not None:
+        item["advancedPrice"] = {"low": 0, "predicted": predicted, "high": 0}
+    return item
+
+
+def test_parse_amber_raw_api():
+    t = datetime(2026, 10, 30, 10, 0, tzinfo=BNE)
+    imports, exports = fc.parse_amber(
+        [
+            _amber(t, 30, "general", 20.0, predicted=18.0),
+            _amber(t, 30, "feedIn", -7.0),
+            _amber(t, 5, "general", 25.0, kind="CurrentInterval"),
+        ]
+    )
+    assert imports[0].start == t
+    assert imports[0].end == t + timedelta(minutes=5)  # 5-min actual preferred
+    assert abs(imports[0].value - 0.25) < 1e-9
+    assert abs(exports[0].value - 0.07) < 1e-9  # earning is positive
+
+
+def test_parse_amber_uses_advanced_price_for_forecasts():
+    t = datetime(2026, 10, 30, 10, 0, tzinfo=BNE)
+    imports, _ = fc.parse_amber([_amber(t, 30, "general", 20.0, predicted=18.0)])
+    assert abs(imports[0].value - 0.18) < 1e-9
+
+
+def test_parse_ha_amber_attributes():
+    imports, _ = fc.parse_amber(
+        [{"start_time": "2026-10-30T00:00:01+00:00", "end_time": "2026-10-30T00:30:00+00:00", "per_kwh": 0.21}]
+    )
+    assert abs(imports[0].value - 0.21) < 1e-9
+
+
+def test_parse_solcast_shapes():
+    api = fc.parse_solar([{"period_end": "2026-10-30T02:00:00Z", "period": "PT30M", "pv_estimate": 4.2}])
+    ha = fc.parse_solar([{"period_start": "2026-10-30T01:30:00+00:00", "pv_estimate": 4.2}])
+    assert api[0].start == ha[0].start
+    assert api[0].end == ha[0].end
+
+
+def test_build_slots_first_slot_is_partial_and_uses_5min_price():
+    t = datetime(2026, 10, 30, 10, 0, tzinfo=BNE)
+    raw = [_amber(t + timedelta(minutes=30 * i), 30, "general", 20 + i) for i in range(6)]
+    raw += [_amber(t + timedelta(minutes=30 * i), 30, "feedIn", -5) for i in range(6)]
+    raw.append(_amber(t + timedelta(minutes=10), 5, "general", 50, kind="CurrentInterval"))
+    imports, exports = fc.parse_amber(raw)
+    now = t + timedelta(minutes=12)
+    slots = fc.build_slots(now, imports, exports, [], [1.0] * 48, BNE)
+    assert abs(slots[0].hours - 18 / 60) < 1e-6
+    # 3 min at 50c in the 5-min actual (10:12-10:15), then 15 min at 20c.
+    assert abs(slots[0].import_price - (3 * 0.50 + 15 * 0.20) / 18) < 1e-6
+    assert slots[1].start == t + timedelta(minutes=30)
+    assert slots[-1].start + timedelta(hours=slots[-1].hours) == t + timedelta(hours=3)
+
+
+def test_deadlines_skip_one_already_passed():
+    now = datetime(2026, 10, 30, 17, 0, tzinfo=BNE)
+    dls = fc.deadlines(now, BNE, 16, 0)
+    assert dls[0] == datetime(2026, 10, 31, 16, 0, tzinfo=BNE)
+
+
+def test_profile_from_samples():
+    t = datetime(2026, 10, 30, 0, 0, tzinfo=BNE)
+    samples = [(t + timedelta(minutes=30 * i), 2.0 if i == 3 else 1.0) for i in range(48)]
+    profile = fc.profile_from_samples(samples, BNE)
+    assert profile[3] == 2.0 and profile[4] == 1.0

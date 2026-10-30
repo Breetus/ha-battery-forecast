@@ -1,0 +1,60 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Energy Planner",
+        "description": "Plans the house battery and EV charging around Amber prices and drives PowerSync.",
+        "data": {
+          "battery_soc_entity": "Battery state of charge (%)",
+          "battery_mode_entity": "PowerSync battery mode sensor",
+          "load_entity": "House load power",
+          "load_includes_ev": "House load includes the EV charger",
+          "ev_power_entity": "EV charger power",
+          "ev_soc_entity": "Car state of charge (leave empty to estimate it)",
+          "charger_switch_entity": "Charger on/off switch",
+          "charger_current_entity": "Charger current limit",
+          "charger_status_entity": "Charger connector status",
+          "house_hold_entity": "Boolean that is on while the EV rule holds the battery",
+          "price_forecast_entity": "Import price forecast entity (only if PowerSync's Amber data is missing)",
+          "feed_in_forecast_entity": "Feed-in price forecast entity (same)",
+          "solar_forecast_entities": "Solcast forecast entities, comma separated (only if PowerSync's Solcast data is missing)",
+          "battery_capacity_kwh": "Battery capacity",
+          "battery_max_power_kw": "Battery maximum charge/discharge power",
+          "export_limit_kw": "Grid export limit",
+          "charger_voltage": "Charger voltage",
+          "charger_max_current": "Charger maximum current"
+        }
+      }
+    },
+    "abort": {
+      "already_configured": "Energy Planner is already set up."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Energy Planner",
+        "data": {
+          "battery_soc_entity": "Battery state of charge (%)",
+          "battery_mode_entity": "PowerSync battery mode sensor",
+          "load_entity": "House load power",
+          "load_includes_ev": "House load includes the EV charger",
+          "ev_power_entity": "EV charger power",
+          "ev_soc_entity": "Car state of charge (leave empty to estimate it)",
+          "charger_switch_entity": "Charger on/off switch",
+          "charger_current_entity": "Charger current limit",
+          "charger_status_entity": "Charger connector status",
+          "house_hold_entity": "Boolean that is on while the EV rule holds the battery",
+          "price_forecast_entity": "Import price forecast entity (only if PowerSync's Amber data is missing)",
+          "feed_in_forecast_entity": "Feed-in price forecast entity (same)",
+          "solar_forecast_entities": "Solcast forecast entities, comma separated (only if PowerSync's Solcast data is missing)",
+          "battery_capacity_kwh": "Battery capacity",
+          "battery_max_power_kw": "Battery maximum charge/discharge power",
+          "export_limit_kw": "Grid export limit",
+          "charger_voltage": "Charger voltage",
+          "charger_max_current": "Charger maximum current"
+        }
+      }
+    }
+  }
+}
