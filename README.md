@@ -19,7 +19,10 @@ Every 5 minutes, and at the start of each half hour, it:
    battery mode (normal, hold, force charge at 2.5/5/7.5/10 kW, or force
    discharge at those powers) and one EV charge level (off, 6 A, 16 A, 32 A).
    The plan is the cheapest one that has the battery and the car at their
-   targets (80% by default) when the evening peak starts (16:00 by default).
+   targets (80% by default) when the afternoon peak price starts (15:00 by
+   default, when Amber steps up from off-peak). Peak and seasonal pricing come
+   through in the Amber price itself, so after the deadline the plan simply
+   avoids the grid because it is dear.
    Being short of a target costs $20/kWh in the plan, so it is only missed
    when that is physically impossible.
 3. In **Auto** mode it sends the first slot to PowerSync
