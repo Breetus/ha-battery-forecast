@@ -32,6 +32,11 @@ _EV_NUDGE = 0.0005
 _EARLY_CHARGE_NUDGE = 0.0001
 # $/kWh charged for grid import above the site supply limit.
 _OVERLOAD_PENALTY = 100.0
+# Cost that rules an action out. A force discharge needs at least half of its
+# power available above the reserve: below that the inverter would keep
+# discharging toward its own (lower) minimum while the plan expects it to stop.
+_INFEASIBLE = 1000.0
+_MIN_DISCHARGE_SHARE = 0.5
 
 
 @dataclass
@@ -194,6 +199,8 @@ def _simulate(slot: Slot, b, e, act: _Action, p: Params, ev_need_kwh: float):
         + _COMMAND_NUDGE[act.mode]
         + (_EV_NUDGE if act.ev_kw else 0.0)
     )
+    if act.mode == MODE_DISCHARGE:
+        cost = cost + np.where(avail_ac < act.power_kw * _MIN_DISCHARGE_SHARE, _INFEASIBLE, 0.0)
     next_b = b + pc * eta_c * h - pd * h / eta_d
     next_e = e + ev_kwh
     return cost, next_b, next_e, pc - pd, ev_ac + zero, grid

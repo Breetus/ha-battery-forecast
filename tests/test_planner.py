@@ -102,3 +102,19 @@ def test_fast_enough_for_a_raspberry_pi():
     t0 = time.perf_counter()
     plan(day_slots(START, n=80), p)
     assert time.perf_counter() - t0 < 3.0
+
+
+def test_no_force_discharge_from_an_empty_battery():
+    # Morning feed-in beats midday feed-in, which tempts the plan to "discharge"
+    # at the reserve just to export solar instead of storing it.
+    def prices(hr):
+        if 5 <= hr < 10:
+            return (0.15, 0.06)
+        return (0.09, 0.03) if 10 <= hr < 15 else (0.18, 0.08)
+
+    p = _params(battery_soc_pct=12, battery_reserve_pct=10)
+    result = plan(day_slots(START, prices=prices), p)
+    cap = p.battery_capacity_kwh
+    for s in result.steps:
+        if s.mode == MODE_DISCHARGE:
+            assert -s.battery_kw >= s.power_kw * 0.5 - 1e-6, s

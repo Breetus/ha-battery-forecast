@@ -99,3 +99,10 @@ def test_profile_from_changes_is_time_weighted():
     assert profile[2] == 2.0
     # Bin 1 had no data, so it gets the overall mean.
     assert abs(profile[1] - (3 * 10 + 2 * 30) / 60) < 1e-3
+
+
+def test_parse_solar_cautious_estimate():
+    item = {"period_start": "2026-10-30T01:30:00+00:00", "pv_estimate": 4.2, "pv_estimate10": 2.0}
+    assert fc.parse_solar([item], key="pv_estimate10")[0].value == 2.0
+    # Falls back to the median when the percentile is missing.
+    assert fc.parse_solar([{"period_start": "2026-10-30T01:30:00+00:00", "pv_estimate": 4.2}], key="pv_estimate10")[0].value == 4.2

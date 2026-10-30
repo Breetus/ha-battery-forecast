@@ -122,6 +122,7 @@ async def test_settings_are_entities(hass):
         "time.energy_planner_peak_price_starts",
         "sensor.energy_planner_battery_at_peak",
         "sensor.energy_planner_next_change",
+        "select.energy_planner_solar_forecast",
     ):
         assert hass.states.get(entity_id) is not None, entity_id
 

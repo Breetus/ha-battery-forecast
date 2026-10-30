@@ -56,7 +56,12 @@ MODE_AUTO = "Auto"
 MODE_PLAN_ONLY = "Plan only"
 MODES = [MODE_AUTO, MODE_PLAN_ONLY]
 
+SOLAR_EXPECTED = "Expected (50%)"
+SOLAR_CAUTIOUS = "Cautious (10%)"
+SOLAR_ESTIMATES = [SOLAR_EXPECTED, SOLAR_CAUTIOUS]
+
 SETTING_MODE = "mode"
+SETTING_SOLAR_ESTIMATE = "solar_estimate"
 SETTING_BATTERY_TARGET = "battery_target"
 SETTING_EV_TARGET = "ev_target"
 SETTING_RESERVE = "battery_reserve"
@@ -71,6 +76,9 @@ SETTING_CONTROL_EV = "control_ev"
 
 SETTING_DEFAULTS = {
     SETTING_MODE: MODE_PLAN_ONLY,
+    # Plan on Solcast's 10th percentile, so a dull day doesn't leave the
+    # battery short at the deadline after selling in the morning.
+    SETTING_SOLAR_ESTIMATE: SOLAR_CAUTIOUS,
     SETTING_BATTERY_TARGET: 80.0,
     SETTING_EV_TARGET: 80.0,
     SETTING_RESERVE: 10.0,

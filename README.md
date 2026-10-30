@@ -65,6 +65,7 @@ leaves the charger alone until the car is unplugged.
 | `number.energy_planner_battery_reserve` | Never plan below this % |
 | `number.energy_planner_battery_wear_cost` | c/kWh charged for every kWh taken out of the battery |
 | `number.energy_planner_grid_import_limit` | kW |
+| `select.energy_planner_solar_forecast` | Plan on Solcast's expected (50%) or cautious (10%) forecast. Cautious is the default, so a morning sale is only planned when even a dull day refills the battery by the deadline |
 | `switch.energy_planner_allow_selling_to_grid` | Allow force discharge for profit |
 | `switch.energy_planner_allow_grid_charging` | Allow force charge from the grid |
 | `switch.energy_planner_control_ev_charger` | Let the planner switch the charger |

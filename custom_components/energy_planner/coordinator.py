@@ -52,6 +52,8 @@ from .const import (
     SETTING_MODE,
     SETTING_PEAK_START,
     SETTING_RESERVE,
+    SETTING_SOLAR_ESTIMATE,
+    SOLAR_CAUTIOUS,
     SETTING_WEAR,
     UPDATE_MINUTES,
 )
@@ -246,7 +248,7 @@ class EnergyPlannerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def _solar(self) -> list[fc.Interval]:
         data = self._powersync_data("solcast_coordinator")
         if data and data.get("forecasts"):
-            solar = fc.parse_solar(data["forecasts"])
+            solar = fc.parse_solar(data["forecasts"], key=self._solar_key())
             if solar:
                 return solar
         solar: list[fc.Interval] = []
@@ -255,9 +257,12 @@ class EnergyPlannerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if state is None:
                 continue
             periods = state.attributes.get("detailedForecast") or state.attributes.get("forecast") or []
-            solar += fc.parse_solar(periods)
+            solar += fc.parse_solar(periods, key=self._solar_key())
         solar.sort(key=lambda i: i.start)
         return solar
+
+    def _solar_key(self) -> str:
+        return "pv_estimate10" if self.settings[SETTING_SOLAR_ESTIMATE] == SOLAR_CAUTIOUS else "pv_estimate"
 
     async def _load(self) -> list[float]:
         now = dt_util.utcnow()

@@ -36,6 +36,7 @@ views:
       - type: entities
         title: Preferences
         entities:
+          - entity: select.energy_planner_solar_forecast
           - entity: switch.energy_planner_allow_selling_to_grid
           - entity: switch.energy_planner_allow_grid_charging
           - entity: switch.energy_planner_control_ev_charger
