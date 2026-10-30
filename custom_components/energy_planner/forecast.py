@@ -46,6 +46,11 @@ def _parse_duration(value) -> timedelta | None:
     return None
 
 
+# When Amber gives two prices for the same interval, the settled or live price
+# beats the forecast.
+_TYPE_RANK = {"ActualInterval": 3, "CurrentInterval": 2, "ForecastInterval": 1}
+
+
 def parse_amber(intervals: list[dict]) -> tuple[list[Interval], list[Interval]]:
     """Split Amber intervals into (import $/kWh, export $/kWh earned).
 
@@ -54,11 +59,12 @@ def parse_amber(intervals: list[dict]) -> tuple[list[Interval], list[Interval]]:
     Amber integration's forecast attributes (snake_case, $/kWh, feed-in
     already positive when you earn).
     """
-    imports: dict[datetime, Interval] = {}
-    exports: dict[datetime, Interval] = {}
+    imports: dict[datetime, tuple[Interval, int]] = {}
+    exports: dict[datetime, tuple[Interval, int]] = {}
     for item in intervals or []:
         if not isinstance(item, dict):
             continue
+        rank = _TYPE_RANK.get(item.get("type"), 0)
         if "perKwh" in item:  # raw Amber API
             start = parse_time(item.get("startTime"))
             end = parse_time(item.get("endTime"))
@@ -95,11 +101,20 @@ def parse_amber(intervals: list[dict]) -> tuple[list[Interval], list[Interval]]:
         start = start.replace(second=0, microsecond=0)
         target = exports if channel == "feedIn" else imports
         # Prefer the shortest interval for a start time (5-minute actuals beat
-        # the 30-minute forecast they sit inside).
+        # the 30-minute forecast they sit inside), and at the same length the
+        # live price over Amber's forecast of it.
         existing = target.get(start)
-        if existing is None or (end - start) < (existing.end - existing.start):
-            target[start] = Interval(start, end, price)
-    return sorted(imports.values(), key=lambda i: i.start), sorted(exports.values(), key=lambda i: i.start)
+        if existing is None:
+            target[start] = (Interval(start, end, price), rank)
+            continue
+        old, old_rank = existing
+        if (end - start, -rank) < (old.end - old.start, -old_rank):
+            target[start] = (Interval(start, end, price), rank)
+
+    def ordered(found: dict[datetime, tuple[Interval, int]]) -> list[Interval]:
+        return sorted((iv for iv, _ in found.values()), key=lambda i: i.start)
+
+    return ordered(imports), ordered(exports)
 
 
 def parse_series(items: list[dict], time_key: str = "time", value_key: str = "value", default_minutes: int = 30) -> list[Interval]:

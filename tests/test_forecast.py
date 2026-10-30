@@ -121,3 +121,15 @@ def test_flagged_spike_plans_on_the_dear_edge():
     imports, exports = fc.parse_amber([general, feed_in])
     assert abs(imports[0].value - 2.00) < 1e-9
     assert abs(exports[0].value - 1.80) < 1e-9
+
+
+def test_live_price_beats_forecast_for_the_same_interval():
+    # PowerSync's merged list repeats the current 5 minutes as a forecast, and
+    # the forecast comes first. The live price must win either way round.
+    t = datetime(2026, 10, 30, 21, 50, tzinfo=BNE)
+    forecast = [_amber(t, 5, "general", 17.9, predicted=17.9), _amber(t, 5, "feedIn", -7.63, predicted=-7.63)]
+    current = [_amber(t, 5, "general", 19.39, kind="CurrentInterval"), _amber(t, 5, "feedIn", -8.99, kind="CurrentInterval")]
+    for items in (forecast + current, current + forecast):
+        imports, exports = fc.parse_amber(items)
+        assert abs(imports[0].value - 0.1939) < 1e-9
+        assert abs(exports[0].value - 0.0899) < 1e-9
