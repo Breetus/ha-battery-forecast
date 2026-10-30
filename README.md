@@ -36,9 +36,11 @@ price beats the value of keeping it, after battery wear (5 c/kWh by default)
 and losses, and never below what's needed to meet the target at the peak.
 Turn `switch.energy_planner_allow_selling_to_grid` off to stop selling.
 
-The battery never feeds the car: while the car charges, the plan assumes the
-existing `ev_grid_only_charging` rule holds the battery, and it never plans a
-force discharge at the same time.
+The battery never feeds the car: while the car charges, the existing
+`ev_grid_only_charging` rule holds the battery, and where that rule doesn't
+(it only starts from normal mode, so not straight after one of the planner's
+own commands) the planner holds it itself. It never plans a force discharge
+while the car charges.
 
 Grid import (house + battery charging + car) is kept under the grid import
 limit (14 kW by default), which also keeps the Ocular charger's own load

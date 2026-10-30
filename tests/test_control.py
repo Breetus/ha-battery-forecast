@@ -58,6 +58,20 @@ def test_house_ev_hold_is_not_an_override():
     assert not d.override and d.commands == []
 
 
+def test_holds_battery_while_car_charges_after_our_force_charge():
+    # Our force charge ran while the car charged; the house rule let go of it.
+    last = LastCommand("charge", 5.0, NOW - timedelta(minutes=20))
+    d = decide_battery(_step("normal"), _state("force_charge", 10, ev=True), last, NOW)
+    assert d.commands[0].service == "hold_battery_soc"
+    assert "car" in d.status
+
+
+def test_keeps_its_own_hold_while_car_charges():
+    last = LastCommand("hold", 0, NOW - timedelta(minutes=25))
+    d = decide_battery(_step("normal"), _state("hold_soc", 5, ev=True), last, NOW)
+    assert d.commands[0].service == "hold_battery_soc"  # refreshed before it lapses
+
+
 def test_waits_for_powersync_to_confirm():
     last = LastCommand("charge", 5.0, NOW - timedelta(seconds=30))
     d = decide_battery(_step("charge", 5.0), _state("normal"), last, NOW)

@@ -94,9 +94,14 @@ def decide_battery(step: Step, state: BatteryState, last: LastCommand | None, no
     mode = step.mode
     power = step.power_kw
 
-    if mode == MODE_NORMAL and (state.ev_charging or state.house_hold_active):
-        # The house rule holds the battery while the car charges; leave it be.
+    car_hold = False
+    if mode == MODE_NORMAL and state.house_hold_active:
+        # The house EV rule is holding the battery while the car charges.
         return BatteryDecision([], "Normal (battery held while the car charges)")
+    if mode == MODE_NORMAL and state.ev_charging:
+        # The battery never feeds the car. The house rule only starts its hold
+        # from normal, so after one of our commands we hold it ourselves.
+        mode, car_hold = MODE_HOLD, True
 
     at_reserve = False
     # Only needed for a reserve above empty; at 0% the inverter stops by itself.
@@ -123,7 +128,9 @@ def decide_battery(step: Step, state: BatteryState, last: LastCommand | None, no
         return BatteryDecision([Command("restore_normal")], "Returning to normal", mode=MODE_NORMAL)
 
     label = {
-        MODE_HOLD: "Holding at the reserve" if at_reserve else "Holding charge",
+        MODE_HOLD: "Holding at the reserve"
+        if at_reserve
+        else ("Holding while the car charges" if car_hold else "Holding charge"),
         MODE_CHARGE: f"Charging from grid at {power:g} kW",
         MODE_DISCHARGE: f"Selling to grid at {power:g} kW",
     }[mode]
