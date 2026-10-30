@@ -24,6 +24,9 @@ cards:
     title: Targets for the evening peak
     entities:
       - entity: time.energy_planner_peak_price_starts
+      - entity: time.energy_planner_peak_price_ends
+      - entity: number.energy_planner_demand_charge
+      - entity: sensor.energy_planner_peak_demand_this_month
       - entity: number.energy_planner_battery_target_at_peak
       - entity: sensor.energy_planner_battery_at_peak
         name: Battery expected at peak

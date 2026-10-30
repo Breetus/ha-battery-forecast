@@ -7,6 +7,7 @@ from homeassistant.const import PERCENTAGE, UnitOfEnergy, UnitOfPower
 from .const import (
     DOMAIN,
     SETTING_BATTERY_TARGET,
+    SETTING_DEMAND_RATE,
     SETTING_EV_CAPACITY,
     SETTING_EV_SOC,
     SETTING_EV_TARGET,
@@ -24,6 +25,7 @@ NUMBERS = [
     (SETTING_WEAR, "Battery wear cost", 0, 30, 0.5, "c/kWh", "mdi:battery-heart-variant"),
     (SETTING_EV_CAPACITY, "EV battery size", 10, 120, 0.5, UnitOfEnergy.KILO_WATT_HOUR, "mdi:car-battery"),
     (SETTING_IMPORT_LIMIT, "Grid import limit", 3, 30, 0.5, UnitOfPower.KILO_WATT, "mdi:transmission-tower"),
+    (SETTING_DEMAND_RATE, "Demand charge", 0, 100, 0.01, "$/kW", "mdi:meter-electric"),
 ]
 
 

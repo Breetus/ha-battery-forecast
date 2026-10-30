@@ -29,6 +29,7 @@ from .const import (
     CONF_EV_SOC,
     CONF_EXPORT_LIMIT,
     CONF_FEED_IN_ENTITY,
+    CONF_GRID_POWER,
     CONF_HOUSE_HOLD,
     CONF_LOAD,
     CONF_LOAD_INCLUDES_EV,
@@ -44,17 +45,20 @@ from .const import (
     SETTING_ALLOW_SELL,
     SETTING_BATTERY_TARGET,
     SETTING_CONTROL_EV,
+    SETTING_DEMAND_RATE,
     SETTING_DEFAULTS,
     SETTING_EV_CAPACITY,
     SETTING_EV_SOC,
     SETTING_EV_TARGET,
     SETTING_IMPORT_LIMIT,
     SETTING_MODE,
+    SETTING_PEAK_END,
     SETTING_PEAK_START,
     SETTING_RESERVE,
     SETTING_WEAR,
     UPDATE_MINUTES,
 )
+from .demand import DemandTracker
 from .control import BatteryState, EvState, LastCommand, decide_battery, decide_ev
 from .planner import Params, Plan, plan
 
@@ -89,6 +93,8 @@ class EnergyPlannerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._ev_power_kw = 0.0
         self._unsubs: list = []
         self._boundary_unsub = None
+        self._demand = DemandTracker()
+        self._demand_flags: list[fc.Interval] = []
 
     # ----- configuration -------------------------------------------------
 
@@ -108,6 +114,12 @@ class EnergyPlannerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 )
             except (KeyError, TypeError, ValueError):
                 self._last_battery = None
+        demand = stored.get("demand") or {}
+        self._demand = DemandTracker(demand.get("month"), float(demand.get("peak_kw") or 0.0), demand.get("peak_at"))
+        self._seed_from_powersync()
+        grid = self.conf(CONF_GRID_POWER)
+        if grid:
+            self._unsubs.append(async_track_state_change_event(self.hass, [grid], self._grid_changed))
         ev_power = self.conf(CONF_EV_POWER)
         if ev_power:
             self._unsubs.append(async_track_state_change_event(self.hass, [ev_power], self._ev_power_changed))
@@ -137,9 +149,61 @@ class EnergyPlannerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             {
                 "last_battery": None
                 if last is None
-                else {"mode": last.mode, "power_kw": last.power_kw, "issued_at": last.issued_at.isoformat()}
+                else {"mode": last.mode, "power_kw": last.power_kw, "issued_at": last.issued_at.isoformat()},
+                "demand": self._demand.as_dict(),
             }
         )
+
+    def _seed_from_powersync(self) -> None:
+        """Start from PowerSync's demand-charge settings, if it has them.
+
+        The setting entities restore their own values afterwards, so this only
+        matters on first install.
+        """
+        for entry in self.hass.config_entries.async_entries(POWERSYNC_DOMAIN):
+            opts = {**entry.data, **entry.options}
+            if not opts.get("demand_charge_enabled"):
+                continue
+            try:
+                self.settings[SETTING_DEMAND_RATE] = float(opts.get("demand_charge_rate") or 0.0)
+            except (TypeError, ValueError):
+                pass
+            for key, setting in (("demand_charge_start_time", SETTING_PEAK_START), ("demand_charge_end_time", SETTING_PEAK_END)):
+                value = str(opts.get(key) or "")
+                if value.count(":") >= 1:
+                    hh, mm = value.split(":")[:2]
+                    if hh.isdigit() and mm.isdigit():
+                        self.settings[setting] = f"{int(hh):02d}:{int(mm):02d}"
+            return
+
+    def _window(self) -> tuple[tuple[int, int], tuple[int, int]]:
+        def hm(value: str) -> tuple[int, int]:
+            hh, mm = (int(x) for x in str(value).split(":")[:2])
+            return hh, mm
+
+        return hm(self.settings[SETTING_PEAK_START]), hm(self.settings[SETTING_PEAK_END])
+
+    def _is_demand_time(self, local: datetime) -> bool:
+        if self._demand_flags:
+            mid = local + timedelta(minutes=15)
+            return any(i.start <= mid < i.end for i in self._demand_flags)
+        return fc.in_window(local, *self._window())
+
+    @callback
+    def _grid_changed(self, event: Event) -> None:
+        tz = dt_util.get_default_time_zone()
+        if self._demand.sample(dt_util.now(tz), _kw(event.data.get("new_state")), self._is_demand_time):
+            self.hass.async_create_task(self._save())
+            self.async_update_listeners()
+
+    def demand_peak(self) -> float:
+        """This month's peak so far: ours, or PowerSync's if it tracks a higher one."""
+        ours = self._demand.current_peak(dt_util.now())
+        theirs = self._float_state("sensor.power_sync_peak_demand_this_cycle")
+        return max(ours, theirs or 0.0)
+
+    def demand_info(self) -> dict:
+        return {**self._demand.as_dict(), "window_from_amber": bool(self._demand_flags)}
 
     def set_setting(self, key: str, value) -> None:
         """Called by the setting entities; re-plans soon after a change."""
@@ -211,6 +275,7 @@ class EnergyPlannerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if data:
             raw = list(data.get("forecast") or []) + list(data.get("current") or [])
             imports, exports = fc.parse_amber(raw)
+            self._demand_flags = fc.parse_amber_demand(raw)
             if imports:
                 return imports, exports, "PowerSync Amber"
         imports = self._price_entity(self.conf(CONF_PRICE_ENTITY), "general")
@@ -332,7 +397,9 @@ class EnergyPlannerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         imports, exports, price_source = self._prices()
         solar = self._solar()
         load = await self._load()
-        slots = fc.build_slots(now, imports, exports, solar, load, tz)
+        slots = fc.build_slots(
+            now, imports, exports, solar, load, tz, demand_window=self._window(), demand_flags=self._demand_flags
+        )
 
         soc = self._float_state(self.conf(CONF_BATTERY_SOC))
         hh, mm = (int(x) for x in str(self.settings[SETTING_PEAK_START]).split(":")[:2])
@@ -360,6 +427,8 @@ class EnergyPlannerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             ev_target_pct=self.ev_target(),
             ev_levels_kw=tuple(round(a * voltage / 1000, 2) for a in sorted({6, 16, max_a})),
             deadlines=fc.deadlines(now, tz, hh, mm),
+            demand_rate=float(self.settings[SETTING_DEMAND_RATE]),
+            demand_peak_kw=self.demand_peak(),
         )
 
         problems = []

@@ -12,6 +12,7 @@ UPDATE_MINUTES = 5
 CONF_BATTERY_SOC = "battery_soc_entity"
 CONF_BATTERY_MODE = "battery_mode_entity"
 CONF_LOAD = "load_entity"
+CONF_GRID_POWER = "grid_power_entity"
 CONF_LOAD_INCLUDES_EV = "load_includes_ev"
 CONF_EV_POWER = "ev_power_entity"
 CONF_EV_SOC = "ev_soc_entity"
@@ -33,6 +34,7 @@ DEFAULTS = {
     CONF_BATTERY_SOC: "sensor.power_sync_battery_level",
     CONF_BATTERY_MODE: "sensor.power_sync_battery_mode",
     CONF_LOAD: "sensor.power_sync_home_load",
+    CONF_GRID_POWER: "sensor.power_sync_grid_power",
     CONF_LOAD_INCLUDES_EV: False,
     CONF_EV_POWER: "sensor.ev_charging_power",
     CONF_EV_SOC: "sensor.wmw52ga0507r62550_battery_hv_state_of_charge",
@@ -65,6 +67,8 @@ SETTING_EV_SOC = "ev_soc"
 SETTING_EV_CAPACITY = "ev_capacity"
 SETTING_IMPORT_LIMIT = "import_limit"
 SETTING_PEAK_START = "peak_start"
+SETTING_PEAK_END = "peak_end"
+SETTING_DEMAND_RATE = "demand_rate"
 SETTING_ALLOW_SELL = "allow_selling"
 SETTING_ALLOW_GRID_CHARGE = "allow_grid_charging"
 SETTING_CONTROL_EV = "control_ev"
@@ -79,6 +83,8 @@ SETTING_DEFAULTS = {
     SETTING_EV_CAPACITY: 64.7,  # MINI Countryman SE ALL4 (U25) usable
     SETTING_IMPORT_LIMIT: 14.0,
     SETTING_PEAK_START: "16:00",
+    SETTING_PEAK_END: "21:00",
+    SETTING_DEMAND_RATE: 0.0,  # $/kW of monthly peak; seeded from PowerSync
     SETTING_ALLOW_SELL: True,
     SETTING_ALLOW_GRID_CHARGE: True,
     SETTING_CONTROL_EV: True,

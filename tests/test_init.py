@@ -34,9 +34,9 @@ def _amber_forecast(now):
     return out
 
 
-async def _setup(hass, powersync_prices=True):
+async def _setup(hass, powersync_prices=True, ps_options=None):
     now = dt_util.utcnow()
-    ps_entry = MockConfigEntry(domain="power_sync", title="PowerSync")
+    ps_entry = MockConfigEntry(domain="power_sync", title="PowerSync", options=ps_options or {})
     ps_entry.add_to_hass(hass)
     hass.data["power_sync"] = {
         ps_entry.entry_id: {
@@ -164,3 +164,19 @@ async def test_uses_car_soc_and_charge_limit(hass):
     await hass.async_block_till_done()
     assert hass.states.get("sensor.energy_planner_status").attributes["ev_soc_used"] == 70
     assert float(hass.states.get("sensor.energy_planner_ev_at_peak").state) <= 75.5
+
+
+async def test_demand_settings_seeded_from_powersync(hass):
+    await _setup(
+        hass,
+        ps_options={
+            "demand_charge_enabled": True,
+            "demand_charge_rate": 12.5,
+            "demand_charge_start_time": "15:00",
+            "demand_charge_end_time": "21:30",
+        },
+    )
+    assert float(hass.states.get("number.energy_planner_demand_charge").state) == 12.5
+    assert hass.states.get("time.energy_planner_peak_price_starts").state == "15:00:00"
+    assert hass.states.get("time.energy_planner_peak_price_ends").state == "21:30:00"
+    assert hass.states.get("sensor.energy_planner_peak_demand_this_month").state == "0.0"

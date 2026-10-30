@@ -44,6 +44,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
             PeakSocSensor(c, "battery_at_peak", "Battery at peak", "battery_soc_at_deadline"),
             PeakSocSensor(c, "ev_at_peak", "EV at peak", "ev_soc_at_deadline"),
             CostSensor(c),
+            DemandPeakSensor(c),
         ]
     )
 
@@ -144,3 +145,22 @@ class CostSensor(PlannerEntity, SensorEntity):
         if not result or not result.steps:
             return {}
         return {"horizon_end": (result.steps[-1].start).isoformat(), "note": "Expected net grid cost over the plan, after battery wear"}
+
+
+class DemandPeakSensor(PlannerEntity, SensorEntity):
+    """Highest half-hour grid import in the demand window this month."""
+
+    _attr_native_unit_of_measurement = "kW"
+    _attr_device_class = SensorDeviceClass.POWER
+    _attr_icon = "mdi:chart-bell-curve-cumulative"
+
+    def __init__(self, c):
+        super().__init__(c, "demand_peak", "Peak demand this month")
+
+    @property
+    def native_value(self):
+        return round(self.coordinator.demand_peak(), 3)
+
+    @property
+    def extra_state_attributes(self):
+        return self.coordinator.demand_info()
