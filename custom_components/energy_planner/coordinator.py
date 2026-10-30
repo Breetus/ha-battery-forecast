@@ -203,6 +203,7 @@ class EnergyPlannerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             soc is not None
             and last is not None
             and last.mode == "discharge"
+            and float(self.settings[SETTING_RESERVE]) > 0
             and soc <= float(self.settings[SETTING_RESERVE])
         ):
             self.hass.async_create_task(self.async_request_refresh())

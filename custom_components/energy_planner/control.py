@@ -99,7 +99,8 @@ def decide_battery(step: Step, state: BatteryState, last: LastCommand | None, no
         return BatteryDecision([], "Normal (battery held while the car charges)")
 
     at_reserve = False
-    if mode in (MODE_NORMAL, MODE_DISCHARGE) and state.soc_pct is not None and state.reserve_pct is not None:
+    # Only needed for a reserve above empty; at 0% the inverter stops by itself.
+    if mode in (MODE_NORMAL, MODE_DISCHARGE) and state.soc_pct is not None and state.reserve_pct:
         held = last is not None and last.mode == MODE_HOLD and state.ps_mode == PS_HOLD
         margin = RESERVE_RELEASE_PCT if held else 0.5
         if mode == MODE_DISCHARGE:

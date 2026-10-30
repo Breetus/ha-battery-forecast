@@ -62,7 +62,7 @@ leaves the charger alone until the car is unplugged.
 | `number.energy_planner_ev_target_at_peak` | Car % wanted at the peak (capped at the charge limit set in the car) |
 | `number.energy_planner_ev_state_of_charge_manual` | Car SoC to use while the MINI's CarData SoC sensor is unavailable; it counts up from charger power |
 | `number.energy_planner_ev_battery_size` | Usable car battery, kWh |
-| `number.energy_planner_battery_reserve` | Never plan below this % |
+| `number.energy_planner_battery_reserve` | Never plan below this % (0 by default: the battery normally runs right down). Above 0, Auto holds the battery at this level |
 | `number.energy_planner_battery_wear_cost` | c/kWh charged for every kWh taken out of the battery |
 | `number.energy_planner_grid_import_limit` | kW |
 | `select.energy_planner_solar_forecast` | Plan on Solcast's expected (50%) or cautious (10%) forecast. Cautious is the default, so a morning sale is only planned when even a dull day refills the battery by the deadline |

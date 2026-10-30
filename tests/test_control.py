@@ -112,3 +112,8 @@ def test_sale_stops_at_the_reserve():
     state = BatteryState("force_discharge", 25, False, False, soc_pct=9.8, reserve_pct=10)
     d = decide_battery(_step("discharge", 10.0), state, last, NOW)
     assert d.commands[0].service == "hold_battery_soc"
+
+
+def test_no_reserve_hold_when_reserve_is_zero():
+    d = decide_battery(_step("normal"), BatteryState("normal", None, False, False, soc_pct=0.0, reserve_pct=0), None, NOW)
+    assert d.commands == []
