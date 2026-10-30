@@ -44,7 +44,6 @@ class Slot:
     export_price: float  # $/kWh earned for export (negative means you pay)
     solar_kw: float  # forecast PV output
     load_kw: float  # forecast house load, excluding the EV
-    demand: bool = False  # inside the network demand-charge window
 
 
 @dataclass
@@ -76,12 +75,6 @@ class Params:
 
     deadlines: list[datetime] = field(default_factory=list)
     shortfall_penalty: float = 20.0  # $/kWh below target at a deadline
-    # Network demand charge: $ per kW of the month's highest half-hour import
-    # inside the demand window. Every window slot that would import above the
-    # month's peak so far is charged the full rate, which makes the plan cover
-    # the window from the battery wherever it can.
-    demand_rate: float = 0.0
-    demand_peak_kw: float = 0.0
     terminal_value_per_kwh: float | None = None
 
     battery_step_kwh: float = 0.25
@@ -198,7 +191,6 @@ def _simulate(slot: Slot, b, e, act: _Action, p: Params, ev_need_kwh: float):
         - exp * h * slot.export_price
         + pd * h * p.wear_cost
         + np.maximum(imp - p.import_limit_kw, 0.0) * h * _OVERLOAD_PENALTY
-        + (np.maximum(imp - p.demand_peak_kw, 0.0) * p.demand_rate if slot.demand else 0.0)
         + _COMMAND_NUDGE[act.mode]
         + (_EV_NUDGE if act.ev_kw else 0.0)
     )

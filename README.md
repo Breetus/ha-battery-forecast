@@ -28,14 +28,6 @@ Every 5 minutes, and at the start of each half hour, it:
    `number.charger_maximum_current`). In **Plan only** mode it just shows the
    plan.
 
-Demand charge: the network charges for the month's highest half-hour grid
-import inside the evening demand window (16:00-21:00 by default; Amber's own
-demand-window flags are used when present). The planner keeps track of this
-month's peak, and in the window it charges the full demand rate for any import
-above it, so the plan covers the window from the battery and charges the car
-before it starts. Set the rate in `number.energy_planner_demand_charge`
-($/kW; copied from PowerSync's demand-charge settings when they're on).
-
 Selling: the plan sells battery energy (force discharge) only when the feed-in
 price beats the value of keeping it, after battery wear (5 c/kWh by default)
 and losses, and never below what's needed to meet the target at the peak.
@@ -62,10 +54,7 @@ leaves the charger alone until the car is unplugged.
 | Entity | Purpose |
 |---|---|
 | `select.energy_planner_mode` | Auto or Plan only (starts in Plan only) |
-| `time.energy_planner_peak_price_starts` | Start of the demand window, and the deadline for the targets |
-| `time.energy_planner_peak_price_ends` | End of the demand window |
-| `number.energy_planner_demand_charge` | Network demand charge, $/kW of the month's peak |
-| `sensor.energy_planner_peak_demand_this_month` | Highest half-hour import in the window so far this month |
+| `time.energy_planner_peak_price_starts` | The deadline for the targets |
 | `number.energy_planner_battery_target_at_peak` | Battery % wanted at the peak |
 | `number.energy_planner_ev_target_at_peak` | Car % wanted at the peak (capped at the charge limit set in the car) |
 | `number.energy_planner_ev_state_of_charge_manual` | Car SoC to use while the MINI's CarData SoC sensor is unavailable; it counts up from charger power |

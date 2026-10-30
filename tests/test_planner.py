@@ -102,29 +102,3 @@ def test_fast_enough_for_a_raspberry_pi():
     t0 = time.perf_counter()
     plan(day_slots(START, n=80), p)
     assert time.perf_counter() - t0 < 3.0
-
-
-def test_demand_window_is_covered_by_the_battery():
-    # Flat 18c import and 8c feed-in all day (like a demand tariff), no sun.
-    flat = lambda hr: (0.18, 0.08)  # noqa: E731
-    slots = day_slots(START, solar_peak=0.0, load=1.5, prices=flat)
-    for s in slots:
-        s.demand = 16 <= s.start.hour < 21
-    p = _params(battery_soc_pct=30, demand_rate=10.0, demand_peak_kw=0.0)
-    result = plan(slots, p)
-    window = [s for s in result.steps if 16 <= s.start.hour < 21]
-    assert window and max(s.grid_kw for s in window) <= 0.01
-    # Without a demand charge, a flat price gives no reason to pre-charge.
-    plain = plan(day_slots(START, solar_peak=0.0, load=1.5, prices=flat), _params(battery_soc_pct=30, battery_target_pct=0))
-    assert not any(s.mode == MODE_CHARGE for s in plain.steps)
-
-
-def test_demand_charge_spares_import_below_this_months_peak():
-    flat = lambda hr: (0.18, 0.08)  # noqa: E731
-    slots = day_slots(START, solar_peak=0.0, load=1.5, prices=flat)
-    for s in slots:
-        s.demand = 16 <= s.start.hour < 21
-    # The month already has a 3 kW peak, so importing 1.5 kW in the window is free of demand charge.
-    p = _params(battery_soc_pct=10, battery_reserve_pct=10, battery_target_pct=10, demand_rate=10.0, demand_peak_kw=3.0)
-    result = plan(slots, p)
-    assert not any(s.mode == MODE_CHARGE for s in result.steps)

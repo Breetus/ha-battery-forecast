@@ -97,32 +97,6 @@ def parse_amber(intervals: list[dict]) -> tuple[list[Interval], list[Interval]]:
     return sorted(imports.values(), key=lambda i: i.start), sorted(exports.values(), key=lambda i: i.start)
 
 
-def parse_amber_demand(intervals: list[dict]) -> list[Interval]:
-    """Intervals that Amber flags as inside the network demand window."""
-    out = []
-    for item in intervals or []:
-        if not isinstance(item, dict) or item.get("channelType") != "general":
-            continue
-        info = item.get("tariffInformation") or {}
-        if not info.get("demandWindow"):
-            continue
-        start = parse_time(item.get("startTime"))
-        end = parse_time(item.get("endTime"))
-        if start and end and end > start:
-            out.append(Interval(start.replace(second=0, microsecond=0), end, 1.0))
-    return sorted(out, key=lambda i: i.start)
-
-
-def in_window(local: datetime, start: tuple[int, int], end: tuple[int, int]) -> bool:
-    """True when a local time falls in a daily [start, end) window (may wrap midnight)."""
-    m = local.hour * 60 + local.minute
-    a = start[0] * 60 + start[1]
-    b = end[0] * 60 + end[1]
-    if a == b:
-        return False
-    return a <= m < b if a < b else (m >= a or m < b)
-
-
 def parse_series(items: list[dict], time_key: str = "time", value_key: str = "value", default_minutes: int = 30) -> list[Interval]:
     """Parse [{time, value}, ...] where each point lasts until the next one.
 
@@ -230,8 +204,6 @@ def build_slots(
     slot_minutes: int = 30,
     horizon_hours: float = 40,
     min_first_minutes: int = 5,
-    demand_window: tuple[tuple[int, int], tuple[int, int]] | None = None,
-    demand_flags: list[Interval] | None = None,
 ) -> list[Slot]:
     """Build slots from now until the end of the price forecast.
 
@@ -259,11 +231,6 @@ def build_slots(
         exp = average_over(exports, start, end)
         sol = average_over(solar, start, end)
         mid = start + (end - start) / 2
-        # Amber's own demand-window flags win; otherwise use the daily window.
-        if demand_flags:
-            demand = average_over(demand_flags, start, end) is not None
-        else:
-            demand = bool(demand_window) and in_window(mid.astimezone(tz), *demand_window)
         slots.append(
             Slot(
                 start=start,
@@ -272,7 +239,6 @@ def build_slots(
                 export_price=round(exp if exp is not None else 0.0, 5),
                 solar_kw=round(max(sol or 0.0, 0.0), 3),
                 load_kw=round(load_profile_kw(load_profile, mid.astimezone(tz)), 3),
-                demand=demand,
             )
         )
         start, boundary = end, end + step
