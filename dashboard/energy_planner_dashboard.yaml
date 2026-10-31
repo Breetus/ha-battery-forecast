@@ -113,7 +113,7 @@ views:
             type: line
             color: orange
             stroke_width: 2
-            name: Buy now
+            name: Buy Price (Actual)
             unit: $/kWh
             extend_to: false
             yaxis_id: first
@@ -123,7 +123,7 @@ views:
           - entity: sensor.jimboombasolar_feed_in_price
             type: line
             stroke_width: 2
-            name: FiT now
+            name: FIT (Actual)
             unit: $/kWh
             extend_to: false
             yaxis_id: first
