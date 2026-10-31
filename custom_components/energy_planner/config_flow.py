@@ -20,6 +20,7 @@ from .const import (
     CONF_EV_SOC,
     CONF_EXPORT_LIMIT,
     CONF_FEED_IN_ENTITY,
+    CONF_GRID_POWER,
     CONF_HOUSE_HOLD,
     CONF_LOAD,
     CONF_LOAD_INCLUDES_EV,
@@ -27,6 +28,7 @@ from .const import (
     CONF_NOTIFY,
     CONF_PRICE_ENTITY,
     CONF_SOLAR_ENTITIES,
+    CONF_SOLAR_POWER,
     DEFAULTS,
     DOMAIN,
 )
@@ -57,6 +59,8 @@ def _schema(values: dict) -> vol.Schema:
         req(CONF_BATTERY_MODE, _ENTITY),
         req(CONF_LOAD, _ENTITY),
         req(CONF_LOAD_INCLUDES_EV, selector.BooleanSelector()),
+        opt(CONF_GRID_POWER, _ENTITY),
+        opt(CONF_SOLAR_POWER, _ENTITY),
         opt(CONF_EV_POWER, _ENTITY),
         opt(CONF_EV_SOC, _ENTITY),
         opt(CONF_EV_LIMIT, _ENTITY),
@@ -97,7 +101,7 @@ class EnergyPlannerOptionsFlow(config_entries.OptionsFlow):
     async def async_step_init(self, user_input=None):
         if user_input is not None:
             # Fields left empty are dropped by the form; record them as cleared.
-            cleared = {k: "" for k in (CONF_NOTIFY, CONF_EV_SOC, CONF_EV_LIMIT, CONF_PRICE_ENTITY, CONF_FEED_IN_ENTITY, CONF_SOLAR_ENTITIES) if k not in user_input}
+            cleared = {k: "" for k in (CONF_NOTIFY, CONF_GRID_POWER, CONF_SOLAR_POWER, CONF_EV_SOC, CONF_EV_LIMIT, CONF_PRICE_ENTITY, CONF_FEED_IN_ENTITY, CONF_SOLAR_ENTITIES) if k not in user_input}
             return self.async_create_entry(data={**cleared, **user_input})
         current = {**self.config_entry.data, **self.config_entry.options}
         return self.async_show_form(step_id="init", data_schema=_schema(current))

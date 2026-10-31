@@ -17,7 +17,8 @@ Every 5 minutes, and at the start of each half hour, it:
    car), the battery SoC, and the car's SoC and charge limit from CarData.
 2. Plans the next ~40 hours in half-hour slots. In each slot it picks one
    battery mode (normal, hold, force charge at 2.5/5/7.5/10 kW, or force
-   discharge at those powers) and one EV charge level (off, 6 A, 16 A, 32 A).
+   discharge at those powers) and one EV charge level: off, spare solar only,
+   or 6/16/32 A (a fixed level also takes any spare solar above it).
    The plan is the cheapest one that has the battery and the car at their
    targets (80% by default) when the afternoon peak price starts (15:00 by
    default, when Amber steps up from off-peak). Peak and seasonal pricing come
@@ -30,6 +31,30 @@ Every 5 minutes, and at the start of each half hour, it:
    and to the charger (`switch.charger_charge_control`,
    `number.charger_maximum_current`). In **Plan only** mode it just shows the
    plan.
+
+## Spare solar first
+
+Grid energy for the car or the battery is only bought for what the sun can't
+supply by the deadline:
+
+- The car charges on spare solar: in Auto the charger current is matched to
+  what would otherwise be exported (the car's draw minus grid import) every
+  30 seconds. Below the charger's 6 A minimum the car pauses, after riding out
+  a short cloud at 6 A for up to 3 minutes, and it rests at least 5 minutes
+  before starting again. The battery fills from the sun first; the car gets
+  the rest.
+- With the default solar setting, **Both (10% and 50%)**, the plan is worked
+  out for a dull day (Solcast's 10% forecast) and a typical day (the median),
+  and each step is the one with the lowest average cost across the two. The
+  dull day's targets must still be met, so a top-up that can't wait is still
+  bought in time, but grid energy that a typical day's sun would provide isn't
+  bought early just because the grid is a fraction of a cent cheaper now. The
+  same rule stops a morning sale that a dull afternoon would have to buy back.
+  The plan shown on the dashboard is the dull day's, so its "at peak" figures
+  are the safe ones and its grid top-ups shrink as the sun turns up.
+- Both forecasts start from the panels' live output and fade back to the
+  forecast over the next few hours.
+- At an import price of 0c, grid and solar cost the same, so either is used.
 
 Selling: the plan sells battery energy (force discharge) only when the feed-in
 price beats the value of keeping it, after battery wear (5 c/kWh by default)
@@ -93,7 +118,7 @@ leaves the charger alone until the car is unplugged.
 | `number.energy_planner_battery_reserve` | Never plan below this % (0 by default: the battery normally runs right down). Above 0, Auto holds the battery at this level |
 | `number.energy_planner_battery_wear_cost` | c/kWh charged for every kWh taken out of the battery |
 | `number.energy_planner_grid_import_limit` | kW |
-| `select.energy_planner_solar_forecast` | Plan on Solcast's expected (50%) or cautious (10%) forecast. Cautious is the default, so a morning sale is only planned when even a dull day refills the battery by the deadline |
+| `select.energy_planner_solar_forecast` | Both (10% and 50%), the default, weighs a dull day against a typical one (see Spare solar first). Expected (50%) or Cautious (10%) plan on one forecast only |
 | `switch.energy_planner_allow_selling_to_grid` | Allow force discharge for profit |
 | `switch.energy_planner_allow_grid_charging` | Allow force charge from the grid |
 | `switch.energy_planner_control_ev_charger` | Let the planner switch the charger |
