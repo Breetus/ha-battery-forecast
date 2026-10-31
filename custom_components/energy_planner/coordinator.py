@@ -65,8 +65,8 @@ from .const import (
     SOLAR_CAUTIOUS,
     UPDATE_MINUTES,
 )
-from .control import PS_MODE_FOR, BatteryState, EvState, LastCommand, decide_battery, decide_ev
-from .planner import Params, Plan, Step, plan
+from .control import PS_MODE_FOR, PS_NORMAL, BatteryState, EvState, LastCommand, decide_battery, decide_ev
+from .planner import MODE_NORMAL, Params, Plan, Step, plan
 from .watchdog import ResponseTracker, Watchdog
 
 _LOGGER = logging.getLogger(__name__)
@@ -78,6 +78,12 @@ EV_MIN_A = 6
 SUNGROW_DIAGNOSTICS = "sensor.power_sync_sungrow_diagnostics"
 # How often the charger is matched to the spare solar between plans.
 EV_FOLLOW_SECONDS = 30
+# How long the inverter may stay forced after PowerSync shows normal before
+# the planner resends the restore. Covers the diagnostics sensor's polling lag.
+INVERTER_STUCK_SECONDS = 150
+# Between plans, resend a stuck restore at most this many times; after that
+# only the regular plan updates retry it.
+INVERTER_QUICK_RETRIES = 3
 STORE_VERSION = 1
 
 
@@ -110,6 +116,8 @@ class EnergyPlannerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._boundary_unsub = None
         self._spare_short_since: datetime | None = None
         self._ev_off_at: datetime | None = None
+        self._forced_since: datetime | None = None
+        self._stuck_restores = 0
 
     # ----- configuration -------------------------------------------------
 
@@ -158,7 +166,7 @@ class EnergyPlannerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if mode_entity:
             self._unsubs.append(async_track_state_change_event(self.hass, [mode_entity], self._battery_mode_changed))
         self._unsubs.append(
-            async_track_time_interval(self.hass, self._follow_solar, timedelta(seconds=EV_FOLLOW_SECONDS))
+            async_track_time_interval(self.hass, self._tick, timedelta(seconds=EV_FOLLOW_SECONDS))
         )
 
     @callback
@@ -416,6 +424,54 @@ class EnergyPlannerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             limit = min(limit, watts / 1000)
         return limit
 
+    def _ems_forced(self) -> bool:
+        """True when the Sungrow diagnostics show the inverter's EMS in forced mode."""
+        diag = self.hass.states.get(SUNGROW_DIAGNOSTICS)
+        if diag is None:
+            return False
+        ems = _num(diag.attributes.get("ems_mode"))
+        if ems is not None:
+            return ems == 2
+        return str(diag.attributes.get("ems_mode_name") or diag.state or "").lower() == "forced"
+
+    def _inverter_forced(self, now: datetime) -> bool:
+        """True when PowerSync has shown normal for a while but the inverter is still forced.
+
+        PowerSync goes back to whatever mode the inverter was in when a force
+        started. If that was itself forced (a restart mid-sale loses its record),
+        its "restore" leaves the inverter forced and stopped while it says normal.
+        """
+        mode = self.hass.states.get(self.conf(CONF_BATTERY_MODE) or "")
+        forced = mode is not None and mode.state == PS_NORMAL and self._ems_forced()
+        if not forced:
+            self._forced_since = None
+            self._stuck_restores = 0
+            return False
+        if self._forced_since is None:
+            self._forced_since = now
+        since = max(self._forced_since, mode.last_changed)
+        return (now - since).total_seconds() >= INVERTER_STUCK_SECONDS
+
+    def _battery_idle(self, soc: float | None) -> str | None:
+        """A problem message when the battery should run the house but the grid does."""
+        if soc is None:
+            return None
+        diag = self.hass.states.get(SUNGROW_DIAGNOSTICS)
+        floor = _num(diag.attributes.get("min_soc")) if diag is not None else None
+        if soc <= max(float(self.settings[SETTING_RESERVE]), floor or 0.0) + 3:
+            return None
+        grid = self._live_kw(CONF_GRID_POWER)
+        sun = self._sun_kw()  # solar minus the house's own use
+        if grid is None or sun is None:
+            return None
+        need = -sun
+        if need > 0.5 and grid > 0.5 and grid >= 0.7 * need:
+            return (
+                f"The plan has the battery running the house, but the house is drawing {grid:.1f} kW "
+                f"from the grid while the battery sits at {soc:.0f}%."
+            )
+        return None
+
     def _live_kw(self, key: str) -> float | None:
         state = self.hass.states.get(self.conf(key) or "")
         if state is None or _num(state.state) is None:
@@ -592,6 +648,8 @@ class EnergyPlannerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             ev_charging=self._ev_power_kw > 1.0 or _kw(self.hass.states.get(self.conf(CONF_EV_POWER) or "")) > 1.0,
             soc_pct=self._float_state(self.conf(CONF_BATTERY_SOC)),
             reserve_pct=float(self.settings[SETTING_RESERVE]),
+            inverter_forced=self._inverter_forced(now),
+            ems_forced=self._ems_forced(),
         )
         decision = decide_battery(step, state, self._last_battery, now)
         self._battery_decision, self._battery_state = decision, state
@@ -607,11 +665,17 @@ class EnergyPlannerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 _LOGGER.warning("PowerSync %s failed: %s", cmd.service, err)
                 self._battery_error = f"PowerSync refused {cmd.service}: {err}"
                 return f"{decision.status} (PowerSync refused: {err})", decision.override
+            if cmd.service == "restore_normal" and state.inverter_forced:
+                self._stuck_restores += 1
+                _LOGGER.warning("Inverter still forced while PowerSync shows normal; resent restore_normal")
+            elif cmd.service == "restore_normal" and decision.mode != MODE_NORMAL:
+                _LOGGER.info("Inverter was left in forced mode; restored normal before the new command")
+            _LOGGER.info("Sent PowerSync %s %s", cmd.service, cmd.data)
+        if decision.commands:
             same = self._last_battery and self._last_battery.mode == decision.mode
             self._battery_attempts = self._battery_attempts + 1 if same else 1
             self._last_battery = LastCommand(decision.mode, decision.power_kw, now, self._battery_attempts)
             await self._save()
-            _LOGGER.info("Sent PowerSync %s %s", cmd.service, cmd.data)
         status = decision.status
         if self._battery_attempts >= 3 and decision.commands:
             status += f" (retry {self._battery_attempts})"
@@ -669,6 +733,28 @@ class EnergyPlannerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return f"{decision.status} (charger refused: {err})"
         return decision.status
 
+    async def _tick(self, _now=None) -> None:
+        await self._watch_inverter()
+        await self._follow_solar()
+
+    async def _watch_inverter(self) -> None:
+        """Between plans, put a stuck inverter back to normal."""
+        result: Plan | None = (self.data or {}).get("plan")
+        step = result.first if result else None
+        now = dt_util.utcnow()
+        if (
+            not self._inverter_forced(now)
+            or step is None
+            or step.mode != MODE_NORMAL
+            or self.settings[SETTING_MODE] != MODE_AUTO
+            or self._stuck_restores >= INVERTER_QUICK_RETRIES
+        ):
+            return
+        status, _ = await self._drive_battery(result, now, True)
+        if self.data is not None and self.data.get("battery_status") != status:
+            self.data["battery_status"] = status
+            self.async_update_listeners()
+
     async def _follow_solar(self, _now=None) -> None:
         """Between plans, keep the charger matched to the spare solar."""
         result: Plan | None = (self.data or {}).get("plan")
@@ -707,6 +793,11 @@ class EnergyPlannerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 )
             elif self._battery_error:
                 problems["refused"] = f"The plan is '{wanted}', but {self._battery_error}."
+            elif state.inverter_forced:
+                problems["inverter_forced"] = (
+                    "PowerSync shows normal, but the inverter is still in forced mode, so the battery isn't "
+                    f"covering the house. The planner has resent PowerSync's restore {self._stuck_restores} times."
+                )
             elif decision.commands and self._battery_attempts >= 3:
                 problems["refused"] = (
                     f"PowerSync hasn't taken the planner's command ({decision.status.lower()}) after "
@@ -721,6 +812,16 @@ class EnergyPlannerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     problems["response"] = issue
             else:
                 self._response.reset()
+            if (
+                decision.target == MODE_NORMAL
+                and not decision.override
+                and not state.inverter_forced
+                and not state.house_hold_active
+                and not state.ev_charging
+            ):
+                idle = self._battery_idle(soc)
+                if idle:
+                    problems["battery_idle"] = idle
 
         ev = getattr(self, "_ev_state", None)
         ev_decision = getattr(self, "_ev_decision", None)
@@ -779,6 +880,11 @@ class EnergyPlannerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
         except Exception as err:  # noqa: BLE001
             _LOGGER.warning("Could not send the alert through %s: %s", target, err)
+
+    @property
+    def stuck_restores(self) -> int:
+        """Restores resent because the inverter stayed forced while PowerSync showed normal."""
+        return self._stuck_restores
 
     def blocked(self) -> list[str]:
         return self._watchdog.blocked()

@@ -109,9 +109,34 @@ incident, with a second "Sorted now" message when it clears. It covers:
   SoC over 10 minutes).
 - The car not charging when planned: the charger switch stays off, the car
   draws nothing (check the car's own timer), or the charger was changed by hand.
+- The inverter stuck in forced mode while PowerSync shows normal (see below).
+- The house running on the grid in a normal step while the battery has charge
+  (more than 3% above the reserve and the inverter's own minimum SoC) and the
+  car isn't charging.
 
 `binary_sensor.energy_planner_plan_blocked` is on while an alert is active.
 Nothing is sent in Plan only.
+
+### Inverter left in forced mode
+
+PowerSync remembers the inverter's EMS mode when a force charge or sale starts
+and puts it back afterwards. If that mode was itself "forced" (for example
+after a Home Assistant restart in the middle of a sale), its restore leaves the
+inverter forced and stopped: PowerSync shows normal, but the battery neither
+charges nor discharges and the house runs on the grid.
+
+The planner reads the inverter's EMS mode from
+`sensor.power_sync_sungrow_diagnostics` and, in Auto:
+
+- If PowerSync shows normal but the inverter is still forced 2.5 minutes later,
+  it sends `power_sync.restore_normal` again (up to three times between plan
+  updates, then at each update), and alerts after about 15 minutes.
+- Before starting a charge or sale while the inverter is already forced, it
+  sends `restore_normal` first, so PowerSync records self-consumption as the
+  mode to go back to.
+
+`inverter_stuck_restores` on `sensor.energy_planner_status` counts the resends.
+Avoid restarting Home Assistant while the planner has a charge or sale running.
 
 ## Manual control
 

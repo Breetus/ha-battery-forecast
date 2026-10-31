@@ -47,6 +47,27 @@ def test_restores_normal_after_our_command():
     assert d.commands[0].service == "restore_normal"
 
 
+def test_resends_restore_when_the_inverter_stays_forced():
+    # PowerSync says normal, but its restore left the inverter forced and stopped.
+    last = LastCommand("normal", 0, NOW - timedelta(minutes=30))
+    state = BatteryState("normal", None, False, False, soc_pct=50, inverter_forced=True, ems_forced=True)
+    d = decide_battery(_step("normal"), state, last, NOW)
+    assert [c.service for c in d.commands] == ["restore_normal"]
+    assert "stuck" in d.status
+    # Not again while PowerSync is still applying it.
+    just_sent = LastCommand("normal", 0, NOW - timedelta(seconds=30))
+    assert decide_battery(_step("normal"), state, just_sent, NOW).commands == []
+
+
+def test_restores_normal_before_a_sale_from_a_leftover_forced_mode():
+    state = BatteryState("normal", None, False, False, soc_pct=50, ems_forced=True)
+    d = decide_battery(_step("discharge", 5.0), state, None, NOW)
+    assert [c.service for c in d.commands] == ["restore_normal", "force_discharge"]
+    # A clean inverter just gets the sale.
+    d = decide_battery(_step("discharge", 5.0), _state(), None, NOW)
+    assert [c.service for c in d.commands] == ["force_discharge"]
+
+
 def test_manual_command_takes_over():
     last = LastCommand("normal", 0, NOW - timedelta(minutes=10))
     d = decide_battery(_step("charge", 5.0), _state("force_discharge", 40), last, NOW)

@@ -318,3 +318,68 @@ async def test_battery_export_after_a_sale_is_not_spare_solar(hass, freezer):
     hass.states.async_set("sensor.power_sync_solar_power", "4.0", {"unit_of_measurement": "kW"})
     await coordinator._follow_solar()
     assert switch_on
+
+
+def _forced_diag(hass, ems=2):
+    hass.states.async_set(
+        "sensor.power_sync_sungrow_diagnostics",
+        "forced" if ems == 2 else "self_consumption",
+        {"ems_mode": ems, "ems_mode_name": "forced" if ems == 2 else "self_consumption", "charge_cmd": 204, "min_soc": 5},
+    )
+
+
+async def test_resends_restore_when_the_inverter_stays_forced(hass, freezer):
+    from custom_components.energy_planner.planner import Plan, Step
+
+    entry, calls = await _setup(hass)
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+    step = Step(dt_util.now(), 0.5, "normal", 0, 0, 0.0, 0, 0.0, 1.0, 0.20, 0.10, -1.0, 50, None)
+    coordinator.data["plan"] = Plan([step], 0, None, None, None)
+    coordinator.settings["mode"] = "Auto"
+    # PowerSync shows normal; its restore left the inverter forced and stopped.
+    _forced_diag(hass)
+    await coordinator._tick()
+    assert not calls["restore_normal"]  # give PowerSync's own restore time to land
+    freezer.tick(timedelta(seconds=160))
+    await coordinator._tick()
+    await hass.async_block_till_done()
+    assert len(calls["restore_normal"]) == 1
+    freezer.tick(timedelta(seconds=30))
+    await coordinator._tick()
+    assert len(calls["restore_normal"]) == 1  # still waiting on that one
+    for _ in range(10):
+        freezer.tick(timedelta(seconds=130))
+        await coordinator._tick()
+    assert len(calls["restore_normal"]) == 3  # then only the regular updates retry
+    assert coordinator.stuck_restores == 3
+    await coordinator._check_plan_followed(step, dt_util.utcnow(), 50.0, True)
+    assert "inverter_forced" in coordinator._watchdog.incidents
+    _forced_diag(hass, ems=0)
+    await coordinator._tick()
+    assert coordinator.stuck_restores == 0
+
+
+async def test_alerts_when_the_battery_sits_idle_in_normal(hass):
+    from custom_components.energy_planner.planner import Plan, Step
+
+    entry, calls = await _setup(hass)
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+    step = Step(dt_util.now(), 0.5, "normal", 0, 0, 0.0, 0, 0.0, 1.0, 0.20, 0.10, -1.0, 50, None)
+    plan = Plan([step], 0, None, None, None)
+    coordinator.settings["mode"] = "Auto"
+    hass.states.async_set("sensor.power_sync_battery_level", "50", {"unit_of_measurement": "%"})
+    hass.states.async_set("sensor.power_sync_solar_power", "0.0", {"unit_of_measurement": "kW"})
+    _forced_diag(hass, ems=0)
+    # The battery covers the house: no problem.
+    hass.states.async_set("sensor.power_sync_grid_power", "0.0", {"unit_of_measurement": "kW"})
+    await coordinator._drive_battery(plan, dt_util.utcnow(), True)
+    await coordinator._check_plan_followed(step, dt_util.utcnow(), 50.0, True)
+    assert "battery_idle" not in coordinator._watchdog.incidents
+    # The grid runs the house while the battery sits at 50%.
+    hass.states.async_set("sensor.power_sync_grid_power", "0.98", {"unit_of_measurement": "kW"})
+    await coordinator._drive_battery(plan, dt_util.utcnow(), True)
+    await coordinator._check_plan_followed(step, dt_util.utcnow(), 50.0, True)
+    assert "battery_idle" in coordinator._watchdog.incidents
+    # Near the inverter's own floor that's expected.
+    await coordinator._check_plan_followed(step, dt_util.utcnow(), 6.0, True)
+    assert "battery_idle" not in coordinator._watchdog.incidents

@@ -52,6 +52,11 @@ class BatteryState:
     ev_charging: bool  # the car is drawing power right now
     soc_pct: float | None = None
     reserve_pct: float | None = None
+    # PowerSync shows normal, but the inverter has stayed in forced mode (its
+    # restore didn't reach the inverter), so the battery isn't serving the house.
+    inverter_forced: bool = False
+    # The inverter's EMS is in forced mode right now, whatever PowerSync shows.
+    ems_forced: bool = False
 
 
 @dataclass
@@ -124,7 +129,16 @@ def decide_battery(step: Step, state: BatteryState, last: LastCommand | None, no
     )
 
     if mode == MODE_NORMAL:
-        if current in (PS_NORMAL, None) or pending:
+        if pending:
+            return BatteryDecision([], "Normal", target=MODE_NORMAL)
+        if current == PS_NORMAL and state.inverter_forced:
+            return BatteryDecision(
+                [Command("restore_normal")],
+                "Returning to normal (the inverter was stuck in forced mode)",
+                mode=MODE_NORMAL,
+                target=MODE_NORMAL,
+            )
+        if current in (PS_NORMAL, None):
             return BatteryDecision([], "Normal", target=MODE_NORMAL)
         return BatteryDecision([Command("restore_normal")], "Returning to normal", mode=MODE_NORMAL, target=MODE_NORMAL)
 
@@ -149,7 +163,14 @@ def decide_battery(step: Step, state: BatteryState, last: LastCommand | None, no
         cmd = Command("force_charge", {"duration": str(COMMAND_MINUTES), "power_w": int(power * 1000)})
     else:
         cmd = Command("force_discharge", {"duration": str(COMMAND_MINUTES), "power_w": int(power * 1000)})
-    return BatteryDecision([cmd], label, mode=mode, power_kw=power, target=mode)
+    commands = [cmd]
+    if mode in (MODE_CHARGE, MODE_DISCHARGE) and current in (PS_NORMAL, None) and state.ems_forced:
+        # PowerSync remembers the inverter's mode at the start of a force and
+        # goes back to it afterwards. Starting from a leftover forced mode (for
+        # example after a restart mid-sale), it would "restore" the inverter to
+        # forced and leave the battery idle, so put it back to normal first.
+        commands.insert(0, Command("restore_normal"))
+    return BatteryDecision(commands, label, mode=mode, power_kw=power, target=mode)
 
 
 # Following spare solar: keep this much headroom so the car doesn't pull the
