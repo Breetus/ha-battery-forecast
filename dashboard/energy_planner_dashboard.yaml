@@ -5,6 +5,125 @@ views:
     path: energy-planner
     icon: mdi:robot
     cards:
+      # Copied from the home dashboard's Battery tab.
+      - type: custom:power-flow-card-plus
+        entities:
+          battery:
+            entity:
+              consumption: sensor.ps_battery_discharging_power
+              production: sensor.ps_battery_charging_power
+            state_of_charge: sensor.power_sync_battery_level
+          grid:
+            entity:
+              consumption: sensor.ps_grid_import_power
+              production: sensor.ps_grid_export_power
+          solar:
+            entity: sensor.power_sync_solar_power
+          home:
+            secondary_info: {}
+            icon: ""
+            entity: sensor.power_sync_home_load
+            subtract_individual: true
+          fossil_fuel_percentage:
+            secondary_info: {}
+          individual:
+            - entity: sensor.ev_charging_power
+              name: Mini
+              icon: mdi:car-electric
+              display_zero_tolerance: 0
+              display_zero: true
+              secondary_info:
+                entity: sensor.wmw52ga0507r62550_battery_hv_state_of_charge
+                unit_of_measurement: "%"
+                decimals: 0
+                display_zero: true
+        clickable_entities: true
+        display_zero_lines:
+          mode: transparency
+          transparency: 90
+          grey_color: [189, 189, 189]
+        use_new_flow_rate_model: true
+        min_flow_rate: 0.75
+        max_flow_rate: 6
+        max_expected_power: 2000
+        min_expected_power: 0.01
+        transparency_zero_lines: 0
+        kilo_threshold: 1000
+        base_decimals: 0
+        kilo_decimals: 1
+      - type: custom:apexcharts-card
+        graph_span: "10h"
+        span:
+          offset: "+5h"
+        header:
+          show: true
+          title: Price
+          show_states: false
+        now:
+          show: true
+          label: Now
+        apex_config:
+          legend:
+            show: true
+          tooltip:
+            y:
+              enabled: true
+              formatter: function (val) { return val.toFixed(2); }
+        yaxis:
+          - id: first
+            decimals: 2
+            opposite: false
+        series:
+          - entity: sensor.jimboombasolar_general_forecast
+            yaxis_id: first
+            type: line
+            color: red
+            stroke_width: 2
+            name: Buy Price Forecast
+            unit: $/kWh
+            data_generator: |
+              const forecasts = entity.attributes.forecasts;
+              const result = forecasts.map(e => [
+                new Date(e.start_time).getTime(),
+                parseFloat(e.per_kwh || 0)
+              ]);
+              return result;
+            show:
+              legend_value: false
+          - entity: sensor.jimboombasolar_feed_in_forecast
+            yaxis_id: first
+            type: line
+            stroke_width: 2
+            name: FIT Forecast
+            unit: $/kWh
+            data_generator: |
+              const forecasts = entity.attributes.forecasts;
+              const result = forecasts.map(e => [
+                new Date(e.start_time).getTime(),
+                parseFloat(e.per_kwh || 0)
+              ]);
+              return result;
+            show:
+              legend_value: false
+          - entity: sensor.jimboombasolar_general_price
+            type: line
+            color: orange
+            stroke_width: 2
+            name: Buy Price (Actual)
+            unit: $/kWh
+            extend_to: false
+            yaxis_id: first
+            show:
+              legend_value: false
+          - entity: sensor.jimboombasolar_feed_in_price
+            type: line
+            stroke_width: 2
+            name: FIT (Actual)
+            unit: $/kWh
+            extend_to: false
+            yaxis_id: first
+            show:
+              legend_value: false
       - type: entities
         title: Control
         entities:

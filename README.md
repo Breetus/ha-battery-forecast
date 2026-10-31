@@ -56,6 +56,14 @@ supply by the deadline:
   forecast over the next few hours.
 - At an import price of 0c, grid and solar cost the same, so either is used.
 
+At a negative import price the plan charges the battery and the car from the
+grid at full power, so you're paid for as much as the supply limit allows. The
+panels can't be switched off on their own here: the SH10RS has no PV-only off
+switch, and stopping the whole inverter would stop the battery charging from
+the grid too (PowerSync deliberately never stops a hybrid). The planner can
+plan the panels off (`can_curtail_solar`) if a separate solar inverter is ever
+added, but nothing drives that yet.
+
 Selling: the plan sells battery energy (force discharge) only when the feed-in
 price beats the value of keeping it, after battery wear (5 c/kWh by default)
 and losses, and never below what's needed to meet the target at the peak.
