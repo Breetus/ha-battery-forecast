@@ -64,6 +64,11 @@ the grid too (PowerSync deliberately never stops a hybrid). The planner can
 plan the panels off (`can_curtail_solar`) if a separate solar inverter is ever
 added, but nothing drives that yet.
 
+Once the car is charging, or a force charge or sale is running, the plan only
+stops it or changes the car's level when that saves more than a few cents (5c
+for the car, 2c for the battery). Otherwise near-equal prices would move the
+plan around at every re-plan and stop the car a minute after each start.
+
 Selling: the plan sells battery energy (force discharge) only when the feed-in
 price beats the value of keeping it, after battery wear (5 c/kWh by default)
 and losses, and never below what's needed to meet the target at the peak.
@@ -138,6 +143,7 @@ leaves the charger alone until the car is unplugged.
 | `sensor.energy_planner_next_change` | The next planned change and when |
 | `sensor.energy_planner_battery_at_peak`, `sensor.energy_planner_ev_at_peak` | Expected % when the peak starts |
 | `sensor.energy_planner_plan_cost` | Expected net grid cost over the plan |
+| `sensor.energy_planner_battery_while_planner_charges` | The battery SoC, only while the planner is force charging (unavailable otherwise), for the green line on the battery chart |
 
 `dashboard/energy_planner_view.yaml` is a ready-made dashboard view (the chart
 needs apexcharts-card from HACS).

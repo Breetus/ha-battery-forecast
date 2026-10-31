@@ -7,7 +7,8 @@ title: Energy Planner
 path: energy-planner
 icon: mdi:robot
 cards:
-  # Copied from the home dashboard's Battery tab.
+  # Copied from the home dashboard's Battery tab (the battery chart's green and
+  # dashed lines now show the planner instead of PowerSync).
   - type: custom:power-flow-card-plus
     entities:
       battery:
@@ -126,6 +127,75 @@ cards:
         yaxis_id: first
         show:
           legend_value: false
+  - type: custom:apexcharts-card
+    header:
+      show: true
+      show_states: true
+      colorize_states: false
+    graph_span: "38h"
+    span:
+      offset: "+12h"
+    now:
+      show: true
+      color: "#898781"
+    yaxis:
+      - min: 0
+        max: 100
+        decimals: 0
+    apex_config:
+      legend:
+        show: false
+      grid:
+        strokeDashArray: 0
+      tooltip:
+        x:
+          format: HH:mm
+    series:
+      - entity: sensor.power_sync_battery_level
+        name: Actual SOC
+        color: "#2a78d6"
+        stroke_width: 2
+        extend_to: false
+        group_by:
+          func: avg
+          duration: "5min"
+        show:
+          name_in_header: false
+      # Green: the planner's own force charges (was PowerSync's optimiser).
+      - entity: sensor.energy_planner_battery_while_planner_charges
+        name: Force charge (planner)
+        color: "#43a047"
+        stroke_width: 6
+        extend_to: false
+        group_by:
+          func: avg
+          duration: "1min"
+        show:
+          in_header: false
+          name_in_header: false
+      - entity: sensor.battery_soc_force_charge_external
+        name: Force charge (external)
+        color: "#ff9800"
+        stroke_width: 6
+        extend_to: false
+        group_by:
+          func: avg
+          duration: "1min"
+        show:
+          in_header: false
+          name_in_header: false
+      # Dashed: the planner's expected battery SoC.
+      - entity: sensor.energy_planner_plan_now
+        name: Plan
+        color: "#2a78d6"
+        stroke_width: 2
+        stroke_dash: 5
+        extend_to: false
+        show:
+          in_header: false
+          name_in_header: false
+        data_generator: |
+          return (entity.attributes.steps || []).map(s => [new Date(s.start).getTime(), s.battery_soc_pct]);
   - type: entities
     title: Control
     entities:
