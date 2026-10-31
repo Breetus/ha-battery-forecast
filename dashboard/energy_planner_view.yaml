@@ -61,7 +61,7 @@ cards:
     header:
       show: true
       title: Price
-      show_states: true  # the live buy price and FiT
+      show_states: true  # the live buy price and FiT, in c/kWh
       colorize_states: true
     now:
       show: true
@@ -72,10 +72,10 @@ cards:
       tooltip:
         y:
           enabled: true
-          formatter: function (val) { return val.toFixed(2); }
+          formatter: function (val) { return val.toFixed(1) + " c/kWh"; }
     yaxis:
       - id: first
-        decimals: 2
+        decimals: 0
         opposite: false
     series:
       - entity: sensor.jimboombasolar_general_forecast
@@ -84,12 +84,12 @@ cards:
         color: red
         stroke_width: 2
         name: Buy Price Forecast
-        unit: $/kWh
+        unit: c/kWh
         data_generator: |
           const forecasts = entity.attributes.forecasts;
           const result = forecasts.map(e => [
             new Date(e.start_time).getTime(),
-            parseFloat(e.per_kwh || 0)
+            parseFloat(e.per_kwh || 0) * 100
           ]);
           return result;
         show:
@@ -100,12 +100,12 @@ cards:
         type: line
         stroke_width: 2
         name: FIT Forecast
-        unit: $/kWh
+        unit: c/kWh
         data_generator: |
           const forecasts = entity.attributes.forecasts;
           const result = forecasts.map(e => [
             new Date(e.start_time).getTime(),
-            parseFloat(e.per_kwh || 0)
+            parseFloat(e.per_kwh || 0) * 100
           ]);
           return result;
         show:
@@ -116,20 +116,22 @@ cards:
         color: orange
         stroke_width: 2
         name: Buy Price (Actual)
-        unit: $/kWh
+        unit: c/kWh
         extend_to: false
         yaxis_id: first
-        float_precision: 3
+        float_precision: 1
+        transform: "return x * 100;"
         show:
           legend_value: false
       - entity: sensor.jimboombasolar_feed_in_price
         type: line
         stroke_width: 2
         name: FIT (Actual)
-        unit: $/kWh
+        unit: c/kWh
         extend_to: false
         yaxis_id: first
-        float_precision: 3
+        float_precision: 1
+        transform: "return x * 100;"
         show:
           legend_value: false
   - type: custom:apexcharts-card
