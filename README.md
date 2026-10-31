@@ -75,6 +75,9 @@ The battery never feeds the car: while the car charges, the existing
 own commands) the planner holds it itself. It never plans a force discharge
 while the car charges.
 
+Sales are planned up to the inverter's own export limit (read from PowerSync's
+Sungrow diagnostics sensor) or the configured limit, whichever is lower.
+
 Grid import (house + battery charging + car) is kept under the grid import
 limit (14 kW by default), which also keeps the Ocular charger's own load
 management from throttling the car.

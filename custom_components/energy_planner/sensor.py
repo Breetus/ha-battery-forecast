@@ -71,6 +71,7 @@ class StatusSensor(PlannerEntity, SensorEntity):
             "problems": d.get("problems"),
             "price_source": d.get("price_source"),
             "ev_soc_used": self.coordinator.ev_soc(),
+            "export_limit_kw": getattr(d.get("params"), "export_limit_kw", None),
             "updated": d.get("updated").isoformat() if d.get("updated") else None,
         }
 

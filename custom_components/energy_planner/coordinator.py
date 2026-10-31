@@ -74,6 +74,8 @@ _LOGGER = logging.getLogger(__name__)
 LOAD_HISTORY_DAYS = 10  # the recorder keeps 10 days by default
 EV_EFFICIENCY = 0.9
 EV_MIN_A = 6
+# PowerSync's (locally patched) Sungrow sensor, which shows the inverter's own export limit.
+SUNGROW_DIAGNOSTICS = "sensor.power_sync_sungrow_diagnostics"
 # How often the charger is matched to the spare solar between plans.
 EV_FOLLOW_SECONDS = 30
 STORE_VERSION = 1
@@ -377,6 +379,21 @@ class EnergyPlannerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         except ValueError:
             return None
 
+    def _export_limit_kw(self) -> float:
+        """The configured export limit, capped at the inverter's own when PowerSync reports it."""
+        limit = float(self.conf(CONF_EXPORT_LIMIT))
+        diag = self.hass.states.get(SUNGROW_DIAGNOSTICS)
+        if diag is None:
+            return limit
+        watts = _num(diag.attributes.get("export_limit_w"))
+        enabled = next(
+            (diag.attributes[k] for k in ("export_limit_enabled", "export_limit_enable") if k in diag.attributes), True
+        )
+        # Near zero is PowerSync curtailing a negative feed-in, not the inverter's setting.
+        if watts is not None and watts >= 1000 and enabled not in (False, "false", "off", 0):
+            limit = min(limit, watts / 1000)
+        return limit
+
     def _live_kw(self, key: str) -> float | None:
         state = self.hass.states.get(self.conf(key) or "")
         if state is None or _num(state.state) is None:
@@ -434,7 +451,7 @@ class EnergyPlannerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             max_discharge_kw=max_kw,
             power_levels_kw=tuple(round(max_kw * f, 2) for f in (0.25, 0.5, 0.75, 1.0)),
             wear_cost=float(self.settings[SETTING_WEAR]) / 100,
-            export_limit_kw=float(self.conf(CONF_EXPORT_LIMIT)),
+            export_limit_kw=self._export_limit_kw(),
             import_limit_kw=float(self.settings[SETTING_IMPORT_LIMIT]),
             allow_grid_charge=bool(self.settings[SETTING_ALLOW_GRID_CHARGE]),
             allow_export=bool(self.settings[SETTING_ALLOW_SELL]),

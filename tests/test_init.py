@@ -264,3 +264,17 @@ async def test_charger_follows_spare_solar(hass, freezer):
     freezer.tick(timedelta(minutes=4))
     await coordinator._follow_solar()
     assert switch_off
+
+
+async def test_plans_on_the_inverters_own_export_limit(hass):
+    entry, _ = await _setup(hass)
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+    hass.states.async_set("sensor.power_sync_sungrow_diagnostics", "ok", {"export_limit_w": 5000, "export_limit_enabled": True})
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
+    assert hass.states.get("sensor.energy_planner_status").attributes["export_limit_kw"] == 5.0
+    # 50 W is PowerSync curtailing a negative feed-in, not the inverter's limit.
+    hass.states.async_set("sensor.power_sync_sungrow_diagnostics", "ok", {"export_limit_w": 50, "export_limit_enabled": True})
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
+    assert hass.states.get("sensor.energy_planner_status").attributes["export_limit_kw"] == 10.0
