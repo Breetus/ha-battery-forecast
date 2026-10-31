@@ -422,12 +422,29 @@ class EnergyPlannerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return None
         return _kw(state)
 
+    def _sun_kw(self) -> float | None:
+        """Solar output above the house's own use (the car not counted)."""
+        solar = self._live_kw(CONF_SOLAR_POWER)
+        load = self._live_kw(CONF_LOAD)
+        if solar is None or load is None:
+            return None
+        if self.conf(CONF_LOAD_INCLUDES_EV):
+            load -= max(_kw(self.hass.states.get(self.conf(CONF_EV_POWER) or "")), 0.0)
+        return solar - load
+
     def _spare_kw(self) -> float | None:
-        """What the car could draw without importing: its draw plus the export."""
+        """Spare solar the car could draw without importing.
+
+        Its draw plus the export, but never more than the solar left after the
+        house: straight after a battery sale the export is the battery's, not
+        the sun's.
+        """
         grid = self._live_kw(CONF_GRID_POWER)  # + import, - export
         if grid is None:
             return None
-        return max(_kw(self.hass.states.get(self.conf(CONF_EV_POWER) or "")), 0.0) - grid
+        spare = max(_kw(self.hass.states.get(self.conf(CONF_EV_POWER) or "")), 0.0) - grid
+        sun = self._sun_kw()
+        return spare if sun is None else min(spare, sun)
 
     def _ev_plugged(self) -> bool:
         state = self.hass.states.get(self.conf(CONF_CHARGER_STATUS) or "")
@@ -620,6 +637,7 @@ class EnergyPlannerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             switch_on=switch_on,
             current_a=self._float_state(self.conf(CONF_CHARGER_CURRENT)),
             spare_kw=spare,
+            sun_kw=self._sun_kw(),
             spare_short_for_s=(now - self._spare_short_since).total_seconds() if self._spare_short_since else 0.0,
             off_for_s=(now - self._ev_off_at).total_seconds() if switch_on is False and self._ev_off_at else None,
         )

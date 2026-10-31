@@ -294,3 +294,27 @@ async def test_charging_soc_shows_only_during_the_planners_charge(hass):
     hass.states.async_set("sensor.power_sync_battery_mode", "normal")
     await hass.async_block_till_done()
     assert hass.states.get("sensor.energy_planner_battery_while_planner_charges").state == "unavailable"
+
+
+async def test_battery_export_after_a_sale_is_not_spare_solar(hass, freezer):
+    from custom_components.energy_planner.planner import Plan, Step
+
+    entry, _ = await _setup(hass)
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+    switch_on = async_mock_service(hass, "switch", "turn_on")
+    async_mock_service(hass, "number", "set_value")
+    hass.states.async_set("sensor.charger_status_connector", "Preparing")
+    # 17:00: the sale has just ended but the battery is still exporting 5 kW; no sun.
+    hass.states.async_set("sensor.power_sync_grid_power", "-5.0", {"unit_of_measurement": "kW"})
+    hass.states.async_set("sensor.power_sync_solar_power", "0.0", {"unit_of_measurement": "kW"})
+    freezer.tick(timedelta(minutes=10))
+    step = Step(dt_util.now(), 0.5, "normal", 0, 0, 0.0, 0, 0.0, 1.0, 0.19, 0.08, 0, 70, 75, ev_solar=True)
+    coordinator.data["plan"] = Plan([step], 0, None, None, None)
+    coordinator.settings["mode"] = "Auto"
+    await coordinator._follow_solar()
+    assert not switch_on
+    # Real spare solar still starts it.
+    hass.states.async_set("sensor.power_sync_grid_power", "-3.0", {"unit_of_measurement": "kW"})
+    hass.states.async_set("sensor.power_sync_solar_power", "4.0", {"unit_of_measurement": "kW"})
+    await coordinator._follow_solar()
+    assert switch_on

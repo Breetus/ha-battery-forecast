@@ -170,3 +170,8 @@ def test_fixed_level_takes_extra_spare_solar():
 def test_spare_unknown_falls_back_to_the_plan():
     d = decide_ev(_solar_step(planned=2.4), EvState(True, False, 6), voltage=240)
     assert d.switch_on is True and d.current_a == 10
+
+
+def test_no_ride_out_once_the_sun_has_gone():
+    dusk = decide_ev(_solar_step(), EvState(True, True, 10, spare_kw=0.0, sun_kw=0.1, spare_short_for_s=10), voltage=240)
+    assert dusk.switch_on is False

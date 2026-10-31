@@ -159,6 +159,9 @@ def decide_battery(step: Step, state: BatteryState, last: LastCommand | None, no
 SPARE_MARGIN_KW = 0.2
 SPARE_STOP_AFTER_S = 180
 SPARE_RESTART_AFTER_S = 300
+# Only ride out a dip while the panels still make at least this much above
+# the house's own use; once the sun has gone the car stops straight away.
+RIDE_OUT_MIN_SUN_KW = 0.5
 
 
 @dataclass
@@ -169,6 +172,7 @@ class EvState:
     # What the car could draw without importing: its own draw plus the export
     # (or minus the import). None when the grid power isn't known.
     spare_kw: float | None = None
+    sun_kw: float | None = None  # solar above the house's own use, None if unknown
     spare_short_for_s: float = 0.0  # how long the spare has been below the minimum
     off_for_s: float | None = None  # how long since the charger was switched off
 
@@ -202,7 +206,8 @@ def decide_ev(step: Step, state: EvState, voltage: float = 230.0, min_a: int = 6
 
     if amps < min_a:
         # Spare solar only, and there isn't enough of it for the charger's minimum.
-        if state.switch_on and state.spare_short_for_s < SPARE_STOP_AFTER_S:
+        sunny = state.sun_kw is None or state.sun_kw >= RIDE_OUT_MIN_SUN_KW
+        if state.switch_on and sunny and state.spare_short_for_s < SPARE_STOP_AFTER_S:
             amps = min_a  # ride out a passing cloud
         else:
             off = False if state.switch_on is not False else None
