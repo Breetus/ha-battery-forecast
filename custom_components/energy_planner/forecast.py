@@ -224,6 +224,7 @@ def build_slots(
     slot_minutes: int = 30,
     horizon_hours: float = 40,
     min_first_minutes: int = 5,
+    solar_high: list[Interval] | None = None,
 ) -> list[Slot]:
     """Build slots from now until the end of the price forecast.
 
@@ -232,6 +233,7 @@ def build_slots(
     """
     imports = _dedupe(imports)
     exports = _dedupe(exports)
+    solar_high = solar_high or None
     if not imports:
         return []
     horizon_end = min(imports[-1].end, now + timedelta(hours=horizon_hours))
@@ -263,6 +265,7 @@ def build_slots(
             break
         exp = average_over(exports, start, end)
         sol = average_over(solar, start, end)
+        high = average_over(solar_high, start, end) if solar_high else None
         mid = start + (end - start) / 2
         slots.append(
             Slot(
@@ -272,10 +275,49 @@ def build_slots(
                 export_price=round(exp if exp is not None else 0.0, 5),
                 solar_kw=round(max(sol or 0.0, 0.0), 3),
                 load_kw=round(load_profile_kw(load_profile, mid.astimezone(tz)), 3),
+                solar_high_kw=None if solar_high is None else round(max(high or 0.0, 0.0), 3),
             )
         )
         start, boundary = end, next_boundary(end)
     return slots
+
+
+def apply_live_solar(
+    slots: list[Slot], live_kw: float | None, half_life_hours: float = 2.0, max_factor: float = 2.5, only_up: bool = False
+) -> None:
+    """Start the solar forecasts from what the panels are doing now.
+
+    The first slot takes the live output. Later slots on the same day are
+    scaled by how far the live output is above or below each forecast now,
+    fading back to the forecast with the given half-life. With only_up (the
+    panels may be throttled, so a low reading means nothing), the forecasts
+    are only ever raised.
+    """
+    if not slots or live_kw is None or live_kw < 0:
+        return
+    first = slots[0]
+    day = first.start.date()
+
+    def factor(forecast_now: float | None) -> float:
+        if forecast_now is None or forecast_now < 0.3:
+            return 1.0  # sun barely up: the ratio means little
+        f = min(max(live_kw / forecast_now, 1 / max_factor), max_factor)
+        return max(f, 1.0) if only_up else f
+
+    f_low = factor(first.solar_kw)
+    f_high = factor(first.solar_high_kw)
+    for slot in slots[1:]:
+        if slot.start.date() != day:
+            break
+        hours = (slot.start - first.start).total_seconds() / 3600
+        fade = 0.5 ** (hours / half_life_hours)
+        slot.solar_kw = round(slot.solar_kw * (1 + (f_low - 1) * fade), 3)
+        if slot.solar_high_kw is not None:
+            slot.solar_high_kw = round(slot.solar_high_kw * (1 + (f_high - 1) * fade), 3)
+    if not only_up or live_kw > first.solar_kw:
+        first.solar_kw = round(live_kw, 3)
+    if first.solar_high_kw is not None and (not only_up or live_kw > first.solar_high_kw):
+        first.solar_high_kw = round(live_kw, 3)
 
 
 def deadlines(now: datetime, tz, hour: int, minute: int, days: int = 3) -> list[datetime]:

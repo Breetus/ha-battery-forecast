@@ -9,7 +9,11 @@ from typing import Any
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN
 from homeassistant.core import Context, Event, HomeAssistant, callback
-from homeassistant.helpers.event import async_track_point_in_utc_time, async_track_state_change_event
+from homeassistant.helpers.event import (
+    async_track_point_in_utc_time,
+    async_track_state_change_event,
+    async_track_time_interval,
+)
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
@@ -29,6 +33,7 @@ from .const import (
     CONF_EV_SOC,
     CONF_EXPORT_LIMIT,
     CONF_FEED_IN_ENTITY,
+    CONF_GRID_POWER,
     CONF_HOUSE_HOLD,
     CONF_LOAD,
     CONF_LOAD_INCLUDES_EV,
@@ -36,6 +41,7 @@ from .const import (
     CONF_NOTIFY,
     CONF_PRICE_ENTITY,
     CONF_SOLAR_ENTITIES,
+    CONF_SOLAR_POWER,
     DEFAULTS,
     DOMAIN,
     MODE_AUTO,
@@ -54,8 +60,9 @@ from .const import (
     SETTING_PEAK_START,
     SETTING_RESERVE,
     SETTING_SOLAR_ESTIMATE,
-    SOLAR_CAUTIOUS,
     SETTING_WEAR,
+    SOLAR_BOTH,
+    SOLAR_CAUTIOUS,
     UPDATE_MINUTES,
 )
 from .control import PS_MODE_FOR, BatteryState, EvState, LastCommand, decide_battery, decide_ev
@@ -66,6 +73,9 @@ _LOGGER = logging.getLogger(__name__)
 
 LOAD_HISTORY_DAYS = 10  # the recorder keeps 10 days by default
 EV_EFFICIENCY = 0.9
+EV_MIN_A = 6
+# How often the charger is matched to the spare solar between plans.
+EV_FOLLOW_SECONDS = 30
 STORE_VERSION = 1
 
 
@@ -96,6 +106,8 @@ class EnergyPlannerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._response = ResponseTracker()
         self._battery_error: str | None = None
         self._boundary_unsub = None
+        self._spare_short_since: datetime | None = None
+        self._ev_off_at: datetime | None = None
 
     # ----- configuration -------------------------------------------------
 
@@ -143,6 +155,9 @@ class EnergyPlannerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         mode_entity = self.conf(CONF_BATTERY_MODE)
         if mode_entity:
             self._unsubs.append(async_track_state_change_event(self.hass, [mode_entity], self._battery_mode_changed))
+        self._unsubs.append(
+            async_track_time_interval(self.hass, self._follow_solar, timedelta(seconds=EV_FOLLOW_SECONDS))
+        )
 
     @callback
     def async_shutdown_listeners(self) -> None:
@@ -286,10 +301,20 @@ class EnergyPlannerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return False
         return (reference > 0) != (current > 0)
 
-    def _solar(self) -> list[fc.Interval]:
+    def _solar(self) -> tuple[list[fc.Interval], list[fc.Interval] | None]:
+        """The solar forecast to plan on and, when hedging, a typical day's."""
+        setting = self.settings[SETTING_SOLAR_ESTIMATE]
+        if setting == SOLAR_BOTH:
+            low = self._solar_forecast("pv_estimate10")
+            high = self._solar_forecast("pv_estimate")
+            return low, (high or None)
+        key = "pv_estimate10" if setting == SOLAR_CAUTIOUS else "pv_estimate"
+        return self._solar_forecast(key), None
+
+    def _solar_forecast(self, key: str) -> list[fc.Interval]:
         data = self._powersync_data("solcast_coordinator")
         if data and data.get("forecasts"):
-            solar = fc.parse_solar(data["forecasts"], key=self._solar_key())
+            solar = fc.parse_solar(data["forecasts"], key=key)
             if solar:
                 return solar
         solar: list[fc.Interval] = []
@@ -298,12 +323,9 @@ class EnergyPlannerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if state is None:
                 continue
             periods = state.attributes.get("detailedForecast") or state.attributes.get("forecast") or []
-            solar += fc.parse_solar(periods, key=self._solar_key())
+            solar += fc.parse_solar(periods, key=key)
         solar.sort(key=lambda i: i.start)
         return solar
-
-    def _solar_key(self) -> str:
-        return "pv_estimate10" if self.settings[SETTING_SOLAR_ESTIMATE] == SOLAR_CAUTIOUS else "pv_estimate"
 
     async def _load(self) -> list[float]:
         now = dt_util.utcnow()
@@ -355,6 +377,19 @@ class EnergyPlannerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         except ValueError:
             return None
 
+    def _live_kw(self, key: str) -> float | None:
+        state = self.hass.states.get(self.conf(key) or "")
+        if state is None or _num(state.state) is None:
+            return None
+        return _kw(state)
+
+    def _spare_kw(self) -> float | None:
+        """What the car could draw without importing: its draw plus the export."""
+        grid = self._live_kw(CONF_GRID_POWER)  # + import, - export
+        if grid is None:
+            return None
+        return max(_kw(self.hass.states.get(self.conf(CONF_EV_POWER) or "")), 0.0) - grid
+
     def _ev_plugged(self) -> bool:
         state = self.hass.states.get(self.conf(CONF_CHARGER_STATUS) or "")
         return state is not None and state.state in PLUGGED_STATES
@@ -376,9 +411,13 @@ class EnergyPlannerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         tz = dt_util.get_default_time_zone()
         self._integrate_ev(_kw(self.hass.states.get(self.conf(CONF_EV_POWER) or "")))
         imports, exports, price_source = self._prices()
-        solar = self._solar()
+        solar, solar_high = self._solar()
         load = await self._load()
-        slots = fc.build_slots(now, imports, exports, solar, load, tz)
+        slots = fc.build_slots(now, imports, exports, solar, load, tz, solar_high=solar_high)
+        if slots:
+            # At a negative feed-in PowerSync throttles the panels, so a low
+            # reading then says nothing about the sun.
+            fc.apply_live_solar(slots, self._live_kw(CONF_SOLAR_POWER), only_up=slots[0].export_price < 0)
 
         soc = self._float_state(self.conf(CONF_BATTERY_SOC))
         hh, mm = (int(x) for x in str(self.settings[SETTING_PEAK_START]).split(":")[:2])
@@ -404,7 +443,8 @@ class EnergyPlannerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             ev_soc_pct=self.ev_soc(),
             ev_efficiency=EV_EFFICIENCY,
             ev_target_pct=self.ev_target(),
-            ev_levels_kw=tuple(round(a * voltage / 1000, 2) for a in sorted({6, 16, max_a})),
+            ev_levels_kw=tuple(round(a * voltage / 1000, 2) for a in sorted({EV_MIN_A, 16, max_a})),
+            ev_min_kw=round(EV_MIN_A * voltage / 1000, 2),
             deadlines=fc.deadlines(now, tz, hh, mm),
         )
 
@@ -524,15 +564,26 @@ class EnergyPlannerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return "EV control off"
         if self._ev_manual:
             return "Charger under manual control until the car is unplugged"
+        now = dt_util.utcnow()
         switch = self.hass.states.get(self.conf(CONF_CHARGER_SWITCH) or "")
-        current = self._float_state(self.conf(CONF_CHARGER_CURRENT))
+        switch_on = None if switch is None else switch.state == "on"
+        spare = self._spare_kw()
+        if spare is not None and switch_on and spare - 0.2 < EV_MIN_A * voltage / 1000:
+            self._spare_short_since = self._spare_short_since or now
+        else:
+            self._spare_short_since = None
+        if switch_on is False and self._ev_off_at is None and switch is not None:
+            self._ev_off_at = switch.last_changed
         state = EvState(
             plugged_in=self._ev_plugged(),
-            switch_on=None if switch is None else switch.state == "on",
-            current_a=current,
+            switch_on=switch_on,
+            current_a=self._float_state(self.conf(CONF_CHARGER_CURRENT)),
+            spare_kw=spare,
+            spare_short_for_s=(now - self._spare_short_since).total_seconds() if self._spare_short_since else 0.0,
+            off_for_s=(now - self._ev_off_at).total_seconds() if switch_on is False and self._ev_off_at else None,
         )
-        decision = decide_ev(result.first, state, voltage, max_a=max_a)
-        self._ev_state = state
+        decision = decide_ev(result.first, state, voltage, min_a=EV_MIN_A, max_a=max_a)
+        self._ev_state, self._ev_decision = state, decision
         if not auto:
             return f"Plan only: {decision.status}"
         try:
@@ -552,10 +603,31 @@ class EnergyPlannerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     blocking=True,
                     context=self._context(),
                 )
+                self._ev_off_at = None if decision.switch_on else now
+                self._spare_short_since = None
         except Exception as err:  # noqa: BLE001
             _LOGGER.warning("Charger command failed: %s", err)
             return f"{decision.status} (charger refused: {err})"
         return decision.status
+
+    async def _follow_solar(self, _now=None) -> None:
+        """Between plans, keep the charger matched to the spare solar."""
+        result: Plan | None = (self.data or {}).get("plan")
+        step = result.first if result else None
+        if (
+            step is None
+            or not (step.ev_solar or step.ev_level_kw > 0)
+            or self.settings[SETTING_MODE] != MODE_AUTO
+            or not self.settings[SETTING_CONTROL_EV]
+            or self._spare_kw() is None
+        ):
+            return
+        status = await self._drive_ev(
+            result, float(self.conf(CONF_CHARGER_VOLTAGE)), int(self.conf(CONF_CHARGER_MAX_A)), True, True
+        )
+        if self.data is not None and self.data.get("ev_status") != status:
+            self.data["ev_status"] = status
+            self.async_update_listeners()
 
     # ----- is the plan being carried out? ---------------------------------
 
@@ -592,7 +664,13 @@ class EnergyPlannerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 self._response.reset()
 
         ev = getattr(self, "_ev_state", None)
-        if control_ev and step.ev_kw > 0.05 and self._ev_plugged():
+        ev_decision = getattr(self, "_ev_decision", None)
+        wants_car = step.ev_kw > 0.05 and not step.ev_solar
+        if step.ev_solar and ev_decision is not None and ev is not None:
+            # Spare solar only: the car is only expected to charge while the
+            # charger has been switched on for it.
+            wants_car = ev.switch_on is True and ev_decision.switch_on is not False
+        if control_ev and wants_car and self._ev_plugged():
             if self._ev_manual:
                 problems["ev_manual"] = (
                     "The plan wants to charge the car, but the charger was changed by hand, "

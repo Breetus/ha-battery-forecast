@@ -133,3 +133,28 @@ def test_live_price_beats_forecast_for_the_same_interval():
         imports, exports = fc.parse_amber(items)
         assert abs(imports[0].value - 0.1939) < 1e-9
         assert abs(exports[0].value - 0.0899) < 1e-9
+
+
+def _solar_slots(low, high):
+    from custom_components.energy_planner.planner import Slot
+
+    t = datetime(2026, 10, 31, 11, 45, tzinfo=BNE)
+    return [Slot(t + timedelta(minutes=30 * i), 0.5, 0.1, 0.05, lo, 1.0, hi) for i, (lo, hi) in enumerate(zip(low, high))]
+
+
+def test_live_solar_starts_both_forecasts_and_fades():
+    slots = _solar_slots([2.0] * 30, [4.0] * 30)
+    fc.apply_live_solar(slots, 5.0)
+    assert slots[0].solar_kw == 5.0 and slots[0].solar_high_kw == 5.0
+    # The dull day is lifted near term and fades back to its forecast.
+    assert 2.0 < slots[8].solar_kw < slots[1].solar_kw <= 5.0
+    assert 4.0 < slots[1].solar_high_kw < 5.0
+    # Tomorrow (from 00:15 at slot 25) is left alone.
+    assert slots[25].solar_kw == 2.0 and slots[25].solar_high_kw == 4.0
+
+
+def test_live_solar_only_raises_when_the_panels_may_be_throttled():
+    slots = _solar_slots([2.0] * 4, [4.0] * 4)
+    fc.apply_live_solar(slots, 1.0, only_up=True)
+    assert [s.solar_kw for s in slots] == [2.0] * 4
+    assert [s.solar_high_kw for s in slots] == [4.0] * 4

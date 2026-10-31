@@ -152,11 +152,25 @@ def decide_battery(step: Step, state: BatteryState, last: LastCommand | None, no
     return BatteryDecision([cmd], label, mode=mode, power_kw=power, target=mode)
 
 
+# Following spare solar: keep this much headroom so the car doesn't pull the
+# last few hundred watts from the grid, stop only after the spare has stayed
+# below the charger's minimum this long, and don't restart sooner than this
+# after a stop, so the charger isn't cycled by passing clouds.
+SPARE_MARGIN_KW = 0.2
+SPARE_STOP_AFTER_S = 180
+SPARE_RESTART_AFTER_S = 300
+
+
 @dataclass
 class EvState:
     plugged_in: bool
     switch_on: bool | None
     current_a: float | None
+    # What the car could draw without importing: its own draw plus the export
+    # (or minus the import). None when the grid power isn't known.
+    spare_kw: float | None = None
+    spare_short_for_s: float = 0.0  # how long the spare has been below the minimum
+    off_for_s: float | None = None  # how long since the charger was switched off
 
 
 @dataclass
@@ -167,13 +181,40 @@ class EvDecision:
 
 
 def decide_ev(step: Step, state: EvState, voltage: float = 230.0, min_a: int = 6, max_a: int = 32) -> EvDecision:
-    """Return the charger changes that match the planned EV power."""
+    """Return the charger changes that match the planned EV power.
+
+    A step either follows the spare solar or sets a fixed level; at a fixed
+    level the car also takes any spare solar above it.
+    """
     if not state.plugged_in:
         return EvDecision(status="Car not plugged in")
-    if step.ev_kw <= 0.05:
+    level_kw = step.ev_level_kw or (0.0 if step.ev_solar else step.ev_kw)
+    if level_kw <= 0.05 and not step.ev_solar:
         return EvDecision(switch_on=False if state.switch_on is not False else None, status="Car waiting")
-    amps = int(round(step.ev_kw * 1000 / voltage))
-    amps = max(min_a, min(max_a, amps))
+
+    base_a = max(min_a, min(max_a, int(round(level_kw * 1000 / voltage)))) if level_kw > 0.05 else 0
+    if state.spare_kw is None:
+        # Grid power unknown: fall back to the plan's own figure.
+        spare_a = int(step.ev_kw * 1000 // voltage) if step.ev_solar else 0
+    else:
+        spare_a = int(max(state.spare_kw - SPARE_MARGIN_KW, 0.0) * 1000 // voltage)
+    amps = min(max_a, max(base_a, spare_a))
+
+    if amps < min_a:
+        # Spare solar only, and there isn't enough of it for the charger's minimum.
+        if state.switch_on and state.spare_short_for_s < SPARE_STOP_AFTER_S:
+            amps = min_a  # ride out a passing cloud
+        else:
+            off = False if state.switch_on is not False else None
+            return EvDecision(switch_on=off, status="Car waiting for spare solar")
+    elif state.switch_on is not True and base_a == 0:
+        if state.off_for_s is not None and state.off_for_s < SPARE_RESTART_AFTER_S:
+            return EvDecision(status="Car waiting for spare solar")
+
     change_a = amps if state.current_a is None or abs(state.current_a - amps) >= 1 else None
     switch = True if state.switch_on is not True else None
-    return EvDecision(switch_on=switch, current_a=change_a, status=f"Charging car at {amps} A")
+    if spare_a >= amps:
+        source = "spare solar"
+    else:
+        source = "spare solar and grid" if spare_a > 0 else "grid"
+    return EvDecision(switch_on=switch, current_a=change_a, status=f"Charging car at {amps} A from {source}")

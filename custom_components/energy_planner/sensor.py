@@ -18,8 +18,12 @@ def describe(step: Step) -> str:
         text = "Hold battery"
     else:
         text = "Normal"
-    if step.ev_kw > 0.05:
-        text += f", car {step.ev_kw:.1f} kW"
+    if step.curtail:
+        text += ", solar off"
+    if step.ev_solar:
+        text += ", car on spare solar"
+    elif step.ev_kw > 0.05:
+        text += f", car {step.ev_level_kw or step.ev_kw:.1f} kW"
     return text
 
 

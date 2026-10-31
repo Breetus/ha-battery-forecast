@@ -7,9 +7,16 @@ The planner works on fixed slots (normally 30 minutes) and runs a backward
 dynamic programme over a two-dimensional state: energy stored in the house
 battery and energy delivered to the car. In every slot it chooses one battery
 mode (normal self-consumption, hold, force charge at a power level or force
-discharge at a power level) and one EV charge level. Missing the battery or EV
-target at a deadline (the start of the evening peak) costs a large penalty per
-kWh short, so the cheapest plan that meets both targets wins.
+discharge at a power level) and one EV charge level, which is either "spare
+solar only" or a fixed level that also takes any spare solar above it. Missing
+the battery or EV target at a deadline (the start of the evening peak) costs a
+large penalty per kWh short, so the cheapest plan that meets both targets wins.
+
+When slots carry a second, sunnier solar forecast, the programme runs once per
+forecast and each step is the one with the lowest average cost across the two.
+That stops the plan buying grid energy now that the sun is likely to provide,
+and selling energy now that a dull afternoon would need back, while the dull
+day's deadline penalty still forces any purchase that can't wait.
 """
 from __future__ import annotations
 
@@ -24,12 +31,11 @@ MODE_CHARGE = "charge"
 MODE_DISCHARGE = "discharge"
 
 # A tiny cost per slot for every non-default action, so that equal-cost plans
-# prefer leaving the inverter alone and the car off.
+# prefer leaving the inverter alone, the car on spare solar only and the
+# panels on.
 _COMMAND_NUDGE = {MODE_NORMAL: 0.0, MODE_HOLD: 0.0005, MODE_CHARGE: 0.001, MODE_DISCHARGE: 0.001}
 _EV_NUDGE = 0.0005
-# Per-slot growth of the charge nudge: when two slots cost the same, charge in
-# the earlier one, because forecasts can only get worse before the deadline.
-_EARLY_CHARGE_NUDGE = 0.0001
+_CURTAIL_NUDGE = 0.0005
 # $/kWh charged for grid import above the site supply limit.
 _OVERLOAD_PENALTY = 100.0
 # Cost that rules an action out. A force discharge needs at least half of its
@@ -47,8 +53,9 @@ class Slot:
     hours: float
     import_price: float  # $/kWh paid for import
     export_price: float  # $/kWh earned for export (negative means you pay)
-    solar_kw: float  # forecast PV output
+    solar_kw: float  # forecast PV output (on a dull day, when solar_high_kw is set)
     load_kw: float  # forecast house load, excluding the EV
+    solar_high_kw: float | None = None  # PV output on a typical day, to hedge between the two
 
 
 @dataclass
@@ -70,17 +77,23 @@ class Params:
     import_limit_kw: float = 14.0
     allow_grid_charge: bool = True
     allow_export: bool = True
+    # The panels can be switched off when the import price is negative, so the
+    # house, battery and car all draw from the grid and get paid for it.
+    can_curtail_solar: bool = False
 
     ev_connected: bool = False
     ev_capacity_kwh: float = 37.0
     ev_soc_pct: float = 0.0
     ev_target_pct: float = 80.0
     ev_levels_kw: tuple[float, ...] = (1.4, 3.7, 7.4)
+    ev_min_kw: float = 1.4  # the charger's lowest current; spare solar below it is left alone
     ev_efficiency: float = 0.9
 
     deadlines: list[datetime] = field(default_factory=list)
     shortfall_penalty: float = 20.0  # $/kWh below target at a deadline
     terminal_value_per_kwh: float | None = None
+    # Weight of the dull-day forecast when slots also carry a typical-day one.
+    dull_day_weight: float = 0.5
 
     battery_step_kwh: float = 0.25
     ev_step_kwh: float = 0.5
@@ -104,6 +117,9 @@ class Step:
     cost: float  # $ for this slot (negative is income)
     battery_soc_pct: float  # at the end of the slot
     ev_soc_pct: float  # at the end of the slot
+    ev_solar: bool = False  # the car follows the spare solar
+    ev_level_kw: float = 0.0  # the car's fixed level, which it tops up with spare solar
+    curtail: bool = False  # panels off (the import price is negative)
 
 
 @dataclass
@@ -123,30 +139,35 @@ class Plan:
 class _Action:
     mode: str
     power_kw: float
-    ev_kw: float
+    ev_kw: float  # fixed car level; spare solar above it goes to the car too
+    ev_solar: bool = False  # car on spare solar only
+    curtail: bool = False  # panels off
 
 
-def _actions(p: Params, ev_needed: bool) -> list[_Action]:
-    ev_options = [0.0]
+def _actions(p: Params, ev_needed: bool, curtail_ok: bool = False) -> list[_Action]:
+    # Spare-solar charging comes before "off", so a tie keeps the car following
+    # the sun rather than leaving it parked while solar is exported.
+    ev_options = [(0.0, False)]
     if ev_needed:
-        ev_options += [lvl for lvl in p.ev_levels_kw if lvl > 0]
+        ev_options = [(0.0, True), (0.0, False)] + [(lvl, False) for lvl in p.ev_levels_kw if lvl > 0]
     actions = []
-    for ev in ev_options:
-        actions.append(_Action(MODE_NORMAL, 0.0, ev))
-        actions.append(_Action(MODE_HOLD, 0.0, ev))
-        if p.allow_grid_charge:
-            for lvl in p.power_levels_kw:
-                if 0 < lvl <= p.max_charge_kw + 1e-9:
-                    actions.append(_Action(MODE_CHARGE, lvl, ev))
-        # The battery never feeds the car, so no force discharge while it charges.
-        if p.allow_export and ev == 0:
-            for lvl in p.power_levels_kw:
-                if 0 < lvl <= p.max_discharge_kw + 1e-9:
-                    actions.append(_Action(MODE_DISCHARGE, lvl, 0.0))
+    for curtail in (False, True) if curtail_ok else (False,):
+        for ev, solar in ev_options:
+            actions.append(_Action(MODE_NORMAL, 0.0, ev, solar, curtail))
+            actions.append(_Action(MODE_HOLD, 0.0, ev, solar, curtail))
+            if p.allow_grid_charge:
+                for lvl in p.power_levels_kw:
+                    if 0 < lvl <= p.max_charge_kw + 1e-9:
+                        actions.append(_Action(MODE_CHARGE, lvl, ev, solar, curtail))
+            # The battery never feeds the car, so no force discharge while it charges.
+            if p.allow_export and ev == 0 and not solar:
+                for lvl in p.power_levels_kw:
+                    if 0 < lvl <= p.max_discharge_kw + 1e-9:
+                        actions.append(_Action(MODE_DISCHARGE, lvl, 0.0, False, curtail))
     return actions
 
 
-def _simulate(slot: Slot, b, e, act: _Action, p: Params, ev_need_kwh: float):
+def _simulate(slot: Slot, b, e, act: _Action, p: Params, ev_need_kwh: float, solar_kw: float | None = None):
     """Apply one action to arrays of battery energy b and EV energy e.
 
     Returns (cost, next_b, next_e, battery_kw, ev_ac_kw, grid_kw); every result
@@ -156,25 +177,41 @@ def _simulate(slot: Slot, b, e, act: _Action, p: Params, ev_need_kwh: float):
     eta_c, eta_d = p.charge_efficiency, p.discharge_efficiency
     b_min = p.battery_capacity_kwh * p.battery_reserve_pct / 100
     b_max = p.battery_capacity_kwh * p.battery_max_pct / 100
-
-    ev_kwh = np.minimum(act.ev_kw * h * p.ev_efficiency, np.maximum(ev_need_kwh - e, 0.0))
-    ev_ac = ev_kwh / p.ev_efficiency / h
-    net = slot.load_kw + ev_ac - slot.solar_kw  # demand left after solar
+    solar = 0.0 if act.curtail else (slot.solar_kw if solar_kw is None else solar_kw)
+    spare = max(solar - slot.load_kw, 0.0)  # solar left after the house
 
     room_ac = np.maximum(b_max - b, 0.0) / (eta_c * h)
     avail_ac = np.maximum(b - b_min, 0.0) * eta_d / h
+    zero = np.zeros(np.broadcast(b, e).shape)
+
+    ev_ac = zero
+    if act.ev_kw > 0 or act.ev_solar:
+        # The battery takes its share of the spare solar first (the charger
+        # follows what would otherwise be exported), the car the rest on top
+        # of its fixed level.
+        if act.mode == MODE_CHARGE:
+            battery_share = np.minimum(act.power_kw, room_ac)
+        elif act.mode == MODE_DISCHARGE:
+            battery_share = zero
+        else:
+            battery_share = np.minimum(np.minimum(max(spare - act.ev_kw, 0.0), p.max_charge_kw), room_ac)
+        ev_max = max(max(p.ev_levels_kw, default=0.0), act.ev_kw)
+        want = np.minimum(act.ev_kw + np.maximum(spare - act.ev_kw - battery_share, 0.0), ev_max)
+        if act.ev_solar:
+            want = np.where(want >= p.ev_min_kw - 1e-9, want, 0.0)
+        ev_kwh = np.minimum(want * h * p.ev_efficiency, np.maximum(ev_need_kwh - e, 0.0))
+        ev_ac = ev_kwh / p.ev_efficiency / h + zero
+    net = slot.load_kw + ev_ac - solar  # demand left after solar
     surplus = np.maximum(-net, 0.0)
     deficit = np.maximum(net, 0.0)
-    zero = np.zeros(np.broadcast(b, e).shape)
 
     # While the car charges, the existing house rule holds the battery so it
     # never feeds the car; normal mode then behaves like hold.
-    if act.mode == MODE_NORMAL and act.ev_kw == 0:
-        pc = np.minimum(np.minimum(surplus, p.max_charge_kw), room_ac)
-        pd = np.minimum(np.minimum(deficit, p.max_discharge_kw), avail_ac)
-    elif act.mode in (MODE_NORMAL, MODE_HOLD):
+    if act.mode in (MODE_NORMAL, MODE_HOLD):
         pc = np.minimum(np.minimum(surplus, p.max_charge_kw), room_ac)
         pd = zero
+        if act.mode == MODE_NORMAL:
+            pd = np.where(ev_ac > 1e-9, 0.0, np.minimum(np.minimum(deficit, p.max_discharge_kw), avail_ac))
     elif act.mode == MODE_CHARGE:
         pc = np.minimum(act.power_kw, room_ac)
         pd = zero
@@ -198,12 +235,13 @@ def _simulate(slot: Slot, b, e, act: _Action, p: Params, ev_need_kwh: float):
         + np.maximum(imp - p.import_limit_kw, 0.0) * h * _OVERLOAD_PENALTY
         + _COMMAND_NUDGE[act.mode]
         + (_EV_NUDGE if act.ev_kw else 0.0)
+        + (_CURTAIL_NUDGE if act.curtail else 0.0)
     )
     if act.mode == MODE_DISCHARGE:
         cost = cost + np.where(avail_ac < act.power_kw * _MIN_DISCHARGE_SHARE, _INFEASIBLE, 0.0)
     next_b = b + pc * eta_c * h - pd * h / eta_d
-    next_e = e + ev_kwh
-    return cost, next_b, next_e, pc - pd, ev_ac + zero, grid
+    next_e = e + ev_kwh if (act.ev_kw > 0 or act.ev_solar) else e + zero
+    return cost, next_b, next_e, pc - pd, ev_ac, grid
 
 
 def _interp_2d(v, b_grid, e_grid, b, e):
@@ -256,10 +294,16 @@ def plan(slots: list[Slot], p: Params) -> Plan:
     ev_needed = ev_need > 0.05
 
     b_grid = _grid(b_min, b_max, p.battery_step_kwh)
-    e_grid = _grid(0.0, ev_need, p.ev_step_kwh) if ev_needed else np.array([0.0])
+    # A big top-up gets a coarser grid, so the plan stays quick on a Raspberry Pi.
+    e_grid = _grid(0.0, ev_need, max(p.ev_step_kwh, ev_need / 40)) if ev_needed else np.array([0.0])
     B = b_grid[:, None]
     E = e_grid[None, :]
-    actions = _actions(p, ev_needed)
+    plain = _actions(p, ev_needed)
+    # Switching the panels off only pays while the grid pays you to import.
+    with_curtail = _actions(p, ev_needed, curtail_ok=True) if p.can_curtail_solar else plain
+
+    def actions_for(slot: Slot) -> list[_Action]:
+        return with_curtail if slot.import_price < 0 else plain
 
     # Penalty for being short of target, added to the value at the start of the
     # first slot that begins at or after each deadline.
@@ -286,21 +330,29 @@ def plan(slots: list[Slot], p: Params) -> Plan:
         terminal = max(prices[len(prices) // 4] * p.discharge_efficiency - p.wear_cost, 0.0)
 
     n = len(slots)
-    value = -(B - b_min) * terminal + np.zeros_like(E)
-    value = value + deadline_penalty(n)
-    values = [None] * (n + 1)
-    values[n] = value
-    for t in range(n - 1, -1, -1):
-        best = None
-        for act in actions:
-            cost, nb_, ne_, *_ = _simulate(slots[t], B, E, act, p, ev_need)
-            if act.mode == MODE_CHARGE:
-                cost = cost + _EARLY_CHARGE_NUDGE * t
-            total = cost + _interp_2d(values[t + 1], b_grid, e_grid, nb_, ne_)
-            best = total if best is None else np.minimum(best, total)
-        values[t] = best + deadline_penalty(t)
+    # The first forecast (a dull day when there are two) is the one the plan
+    # shows; the second only steers the choice of each step.
+    forecasts = [[s.solar_kw for s in slots]]
+    if any(s.solar_high_kw is not None for s in slots):
+        forecasts.append([s.solar_kw if s.solar_high_kw is None else s.solar_high_kw for s in slots])
+    weights = [1.0] if len(forecasts) == 1 else [p.dull_day_weight, 1 - p.dull_day_weight]
 
-    # Forward pass from the real (continuous) state.
+    def backward(solar: list[float]) -> list:
+        value = -(B - b_min) * terminal + np.zeros_like(E)
+        values = [None] * (n + 1)
+        values[n] = value + deadline_penalty(n)
+        for t in range(n - 1, -1, -1):
+            best = None
+            for act in actions_for(slots[t]):
+                cost, nb_, ne_, *_ = _simulate(slots[t], B, E, act, p, ev_need, solar[t])
+                total = cost + _interp_2d(values[t + 1], b_grid, e_grid, nb_, ne_)
+                best = total if best is None else np.minimum(best, total)
+            values[t] = best + deadline_penalty(t)
+        return values
+
+    value_sets = [backward(solar) for solar in forecasts]
+
+    # Forward pass from the real (continuous) state, along the first forecast.
     steps: list[Step] = []
     b, e = np.array(b0), np.array(0.0)
     total_cost = 0.0
@@ -310,15 +362,24 @@ def plan(slots: list[Slot], p: Params) -> Plan:
             batt_at_dl = float(b) / cap * 100
             ev_at_dl = _ev_pct(p, float(e)) if p.ev_connected else None
         best = None
-        for act in actions:
-            cost, nb_, ne_, bkw, evkw, gkw = _simulate(slot, b, e, act, p, ev_need)
-            early = _EARLY_CHARGE_NUDGE * t if act.mode == MODE_CHARGE else 0.0
-            total = float(cost + early + _interp_2d(values[t + 1], b_grid, e_grid, nb_, ne_))
-            if best is None or total < best[0] - 1e-9:
-                best = (total, act, float(cost), float(nb_), float(ne_), float(bkw), float(evkw), float(gkw))
+        for act in actions_for(slot):
+            score = 0.0
+            outcome = None
+            for weight, solar, values in zip(weights, forecasts, value_sets):
+                cost, nb_, ne_, bkw, evkw, gkw = _simulate(slot, b, e, act, p, ev_need, solar[t])
+                score += weight * float(cost + _interp_2d(values[t + 1], b_grid, e_grid, nb_, ne_))
+                if outcome is None:
+                    outcome = (float(cost), float(nb_), float(ne_), float(bkw), float(evkw), float(gkw))
+            if best is None or score < best[0] - 1e-9:
+                best = (score, act, *outcome)
         _, act, cost, nb_, ne_, bkw, evkw, gkw = best
         b, e = np.array(nb_), np.array(ne_)
-        real_cost = cost - _COMMAND_NUDGE[act.mode] - (_EV_NUDGE if act.ev_kw else 0.0)
+        real_cost = (
+            cost
+            - _COMMAND_NUDGE[act.mode]
+            - (_EV_NUDGE if act.ev_kw else 0.0)
+            - (_CURTAIL_NUDGE if act.curtail else 0.0)
+        )
         total_cost += real_cost
         steps.append(
             Step(
@@ -329,13 +390,16 @@ def plan(slots: list[Slot], p: Params) -> Plan:
                 battery_kw=round(bkw, 3),
                 ev_kw=round(evkw, 3),
                 grid_kw=round(gkw, 3),
-                solar_kw=slot.solar_kw,
+                solar_kw=0.0 if act.curtail else slot.solar_kw,
                 load_kw=slot.load_kw,
                 import_price=slot.import_price,
                 export_price=slot.export_price,
                 cost=round(real_cost, 4),
                 battery_soc_pct=round(float(b) / cap * 100, 1),
                 ev_soc_pct=round(_ev_pct(p, float(e)), 1) if p.ev_connected else None,
+                ev_solar=act.ev_solar,
+                ev_level_kw=act.ev_kw,
+                curtail=act.curtail,
             )
         )
     if first_deadline_idx is None and p.deadlines and n:

@@ -131,3 +131,42 @@ def test_sale_stops_at_the_reserve():
 def test_no_reserve_hold_when_reserve_is_zero():
     d = decide_battery(_step("normal"), BatteryState("normal", None, False, False, soc_pct=0.0, reserve_pct=0), None, NOW)
     assert d.commands == []
+
+
+def _solar_step(level=0.0, planned=2.0):
+    step = _step(ev=planned)
+    step.ev_solar = level == 0
+    step.ev_level_kw = level
+    return step
+
+
+def test_follows_spare_solar():
+    d = decide_ev(_solar_step(), EvState(True, True, 6, spare_kw=3.0), voltage=240)
+    assert d.current_a == 11 and d.switch_on is None  # (3.0 - 0.2) kW / 240 V
+    assert "spare solar" in d.status
+
+
+def test_starts_on_spare_solar_after_a_rest():
+    rested = decide_ev(_solar_step(), EvState(True, False, 6, spare_kw=2.5, off_for_s=600), voltage=240)
+    assert rested.switch_on is True and rested.current_a == 9
+    too_soon = decide_ev(_solar_step(), EvState(True, False, 6, spare_kw=2.5, off_for_s=60), voltage=240)
+    assert too_soon.switch_on is None and too_soon.current_a is None
+
+
+def test_rides_out_a_cloud_then_stops():
+    cloud = decide_ev(_solar_step(), EvState(True, True, 10, spare_kw=0.5, spare_short_for_s=60), voltage=240)
+    assert cloud.current_a == 6 and cloud.switch_on is None
+    stop = decide_ev(_solar_step(), EvState(True, True, 6, spare_kw=0.5, spare_short_for_s=200), voltage=240)
+    assert stop.switch_on is False
+
+
+def test_fixed_level_takes_extra_spare_solar():
+    more = decide_ev(_solar_step(level=3.84), EvState(True, True, 16, spare_kw=6.0), voltage=240)
+    assert more.current_a == 24 and more.status.endswith("spare solar")
+    floor = decide_ev(_solar_step(level=3.84), EvState(True, True, 24, spare_kw=1.0), voltage=240)
+    assert floor.current_a == 16 and floor.status.endswith("spare solar and grid")
+
+
+def test_spare_unknown_falls_back_to_the_plan():
+    d = decide_ev(_solar_step(planned=2.4), EvState(True, False, 6), voltage=240)
+    assert d.switch_on is True and d.current_a == 10

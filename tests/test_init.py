@@ -234,3 +234,33 @@ async def test_sells_into_a_live_price_spike(hass):
     plan_now = hass.states.get("sensor.energy_planner_plan_now")
     assert plan_now.state.startswith("Sell"), plan_now.state
     assert calls["force_discharge"]
+
+
+async def test_charger_follows_spare_solar(hass, freezer):
+    from custom_components.energy_planner.planner import Plan, Step
+
+    entry, _ = await _setup(hass)
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+    switch_on = async_mock_service(hass, "switch", "turn_on")
+    switch_off = async_mock_service(hass, "switch", "turn_off")
+    set_current = async_mock_service(hass, "number", "set_value")
+    hass.states.async_set("sensor.charger_status_connector", "Preparing")
+    hass.states.async_set("sensor.power_sync_grid_power", "-3000", {"unit_of_measurement": "W"})
+    freezer.tick(timedelta(minutes=10))  # the charger has been off a while
+    step = Step(dt_util.now(), 0.5, "normal", 0, 0, 2.0, 0, 3.0, 1.0, 0.1, 0.05, 0, 100, 66, ev_solar=True)
+    coordinator.data["plan"] = Plan([step], 0, None, None, None)
+    coordinator.settings["mode"] = "Auto"
+
+    await coordinator._follow_solar()
+    assert switch_on and set_current[-1].data["value"] == 11  # (3.0 - 0.2) kW at 240 V
+    hass.states.async_set("switch.charger_charge_control", "on")
+    hass.states.async_set("number.charger_maximum_current", "11")
+
+    # A cloud: the car's 2.6 kW now needs 1.5 kW from the grid.
+    hass.states.async_set("sensor.ev_charging_power", "2640", {"unit_of_measurement": "W"})
+    hass.states.async_set("sensor.power_sync_grid_power", "1500", {"unit_of_measurement": "W"})
+    await coordinator._follow_solar()
+    assert set_current[-1].data["value"] == 6 and not switch_off  # rides it out at the minimum
+    freezer.tick(timedelta(minutes=4))
+    await coordinator._follow_solar()
+    assert switch_off

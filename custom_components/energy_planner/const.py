@@ -29,6 +29,8 @@ CONF_MAX_POWER = "battery_max_power_kw"
 CONF_EXPORT_LIMIT = "export_limit_kw"
 CONF_CHARGER_VOLTAGE = "charger_voltage"
 CONF_CHARGER_MAX_A = "charger_max_current"
+CONF_GRID_POWER = "grid_power_entity"
+CONF_SOLAR_POWER = "solar_power_entity"
 
 DEFAULTS = {
     CONF_BATTERY_SOC: "sensor.power_sync_battery_level",
@@ -51,6 +53,8 @@ DEFAULTS = {
     CONF_EXPORT_LIMIT: 10.0,
     CONF_CHARGER_VOLTAGE: 240.0,
     CONF_CHARGER_MAX_A: 32,
+    CONF_GRID_POWER: "sensor.power_sync_grid_power",
+    CONF_SOLAR_POWER: "sensor.power_sync_solar_power",
 }
 
 # Runtime settings, each backed by a number/switch/select/time entity.
@@ -60,7 +64,8 @@ MODES = [MODE_AUTO, MODE_PLAN_ONLY]
 
 SOLAR_EXPECTED = "Expected (50%)"
 SOLAR_CAUTIOUS = "Cautious (10%)"
-SOLAR_ESTIMATES = [SOLAR_EXPECTED, SOLAR_CAUTIOUS]
+SOLAR_BOTH = "Both (10% and 50%)"
+SOLAR_ESTIMATES = [SOLAR_BOTH, SOLAR_EXPECTED, SOLAR_CAUTIOUS]
 
 SETTING_MODE = "mode"
 SETTING_SOLAR_ESTIMATE = "solar_estimate"
@@ -78,9 +83,10 @@ SETTING_CONTROL_EV = "control_ev"
 
 SETTING_DEFAULTS = {
     SETTING_MODE: MODE_PLAN_ONLY,
-    # Plan on Solcast's 10th percentile, so a dull day doesn't leave the
-    # battery short at the deadline after selling in the morning.
-    SETTING_SOLAR_ESTIMATE: SOLAR_CAUTIOUS,
+    # Weigh a dull day (Solcast's 10th percentile) against a typical one (the
+    # median): the dull day's targets must still be met, but grid energy that a
+    # typical day's sun would provide isn't bought early.
+    SETTING_SOLAR_ESTIMATE: SOLAR_BOTH,
     SETTING_BATTERY_TARGET: 80.0,
     SETTING_EV_TARGET: 80.0,
     SETTING_RESERVE: 0.0,  # the battery normally runs right down
