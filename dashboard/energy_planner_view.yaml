@@ -248,5 +248,5 @@ cards:
       | Time | Plan | Batt % | Car % | Grid kW | Buy | Sell |
       |---|---|---|---|---|---|---|
       {%- for s in (state_attr('sensor.energy_planner_plan_now', 'steps') or [])[:24] %}
-      | {{ as_timestamp(s.start) | timestamp_custom('%H:%M') }} | {{ s.mode }}{% if s.power_kw %} {{ s.power_kw }} kW{% endif %}{% if s.ev_kw > 0.05 %} + car {{ s.ev_kw | round(1) }} kW{% endif %} | {{ s.battery_soc_pct }} | {{ s.ev_soc_pct if s.ev_soc_pct is not none else '' }} | {{ s.grid_kw | round(1) }} | {{ (s.import_price * 100) | round(0) }}c | {{ (s.export_price * 100) | round(0) }}c |
+      | {{ as_timestamp(s.start) | timestamp_custom('%H:%M') }} | {{ s.mode }}{% if s.power_kw %} {{ s.power_kw }} kW{% endif %}{% if s.ev_kw > 0.05 %} + car {{ s.ev_kw | round(1) }} kW{% if s.ev_solar %} solar{% endif %}{% endif %}{% if s.curtail %}, solar off{% endif %} | {{ s.battery_soc_pct }} | {{ s.ev_soc_pct if s.ev_soc_pct is not none else '' }} | {{ s.grid_kw | round(1) }} | {{ (s.import_price * 100) | round(0) }}c | {{ (s.export_price * 100) | round(0) }}c |
       {%- endfor %}

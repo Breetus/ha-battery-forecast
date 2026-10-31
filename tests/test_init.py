@@ -278,3 +278,19 @@ async def test_plans_on_the_inverters_own_export_limit(hass):
     await coordinator.async_refresh()
     await hass.async_block_till_done()
     assert hass.states.get("sensor.energy_planner_status").attributes["export_limit_kw"] == 10.0
+
+
+async def test_charging_soc_shows_only_during_the_planners_charge(hass):
+    _, calls = await _setup(hass)
+    assert hass.states.get("sensor.energy_planner_battery_while_planner_charges").state == "unavailable"
+    await hass.services.async_call(
+        "select", "select_option", {"entity_id": "select.energy_planner_mode", "option": "Auto"}, blocking=True
+    )
+    await hass.async_block_till_done()
+    assert calls["force_charge"]
+    hass.states.async_set("sensor.power_sync_battery_mode", "force_charge", {"remaining_minutes": 29})
+    await hass.async_block_till_done()
+    assert hass.states.get("sensor.energy_planner_battery_while_planner_charges").state == "30.0"
+    hass.states.async_set("sensor.power_sync_battery_mode", "normal")
+    await hass.async_block_till_done()
+    assert hass.states.get("sensor.energy_planner_battery_while_planner_charges").state == "unavailable"

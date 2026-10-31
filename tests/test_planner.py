@@ -232,3 +232,23 @@ def test_panels_stay_on_at_zero_or_without_control():
 
     off = plan(_midday(dull_peak=6.0, prices=negative), _car_today(battery_soc_pct=60))
     assert not any(s.curtail for s in off.steps)
+
+
+def test_keeps_the_car_charging_unless_stopping_saves_real_money():
+    # 3.9 kWh to go and near-equal prices: the plan would happily move the
+    # charge around, but once the car is charging it carries on.
+    def prices(hr):
+        return (0.105 if hr < 14 else 0.104, 0.048) if hr < 15 else (0.19, 0.08)
+
+    slots = _midday(dull_peak=0.5, prices=prices)
+    free = plan(slots, _car_today(ev_soc_pct=74)).steps[0]
+    running = plan(slots, _car_today(ev_soc_pct=74, ev_level_now_kw=7.68)).steps[0]
+    assert free.ev_kw < 0.05  # left for the 0.1c cheaper hour
+    assert running.ev_level_kw == 7.68 and running.ev_kw > 7
+
+    # A real saving still stops it.
+    def dear_now(hr):
+        return (0.30 if hr < 12.5 else 0.10, 0.048) if hr < 15 else (0.19, 0.08)
+
+    stopped = plan(_midday(dull_peak=0.5, prices=dear_now), _car_today(ev_soc_pct=74, ev_level_now_kw=7.68)).steps[0]
+    assert stopped.ev_kw < 0.05

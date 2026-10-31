@@ -379,6 +379,28 @@ class EnergyPlannerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         except ValueError:
             return None
 
+    def _ev_level_now(self) -> float | None:
+        """The level the last plan set for a car that is charging now (0 for spare solar)."""
+        if self._ev_manual or _kw(self.hass.states.get(self.conf(CONF_EV_POWER) or "")) < 1.0:
+            return None
+        previous: Plan | None = (self.data or {}).get("plan")
+        step = previous.first if previous else None
+        if step is None:
+            return None
+        return 0.0 if step.ev_solar else (step.ev_level_kw or step.ev_kw)
+
+    def _battery_mode_now(self) -> str | None:
+        """The planner's own force charge or sale, if PowerSync is running it now."""
+        last = self._last_battery
+        mode = self.hass.states.get(self.conf(CONF_BATTERY_MODE) or "")
+        if last is None or mode is None or PS_MODE_FOR.get(last.mode) != mode.state:
+            return None
+        return last.mode
+
+    def planner_charging(self) -> bool:
+        """True while PowerSync runs a force charge that the planner asked for."""
+        return self._battery_mode_now() == "charge"
+
     def _export_limit_kw(self) -> float:
         """The configured export limit, capped at the inverter's own when PowerSync reports it."""
         limit = float(self.conf(CONF_EXPORT_LIMIT))
@@ -463,6 +485,8 @@ class EnergyPlannerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             ev_levels_kw=tuple(round(a * voltage / 1000, 2) for a in sorted({EV_MIN_A, 16, max_a})),
             ev_min_kw=round(EV_MIN_A * voltage / 1000, 2),
             deadlines=fc.deadlines(now, tz, hh, mm),
+            ev_level_now_kw=self._ev_level_now(),
+            battery_mode_now=self._battery_mode_now(),
         )
 
         problems = []

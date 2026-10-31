@@ -95,6 +95,14 @@ class Params:
     # Weight of the dull-day forecast when slots also carry a typical-day one.
     dull_day_weight: float = 0.5
 
+    # What is running now, so the first step only stops or changes it when that
+    # saves more than a few cents. Without this, near-equal prices flip the plan
+    # at every re-plan and the car gets stopped a minute after each start.
+    ev_level_now_kw: float | None = None  # fixed car level running now (0 for spare solar), None if the car isn't charging
+    battery_mode_now: str | None = None
+    ev_change_cost: float = 0.05  # $ to stop the car or change its level
+    battery_change_cost: float = 0.02  # $ to end a running force charge or sale
+
     battery_step_kwh: float = 0.25
     ev_step_kwh: float = 0.5
 
@@ -363,7 +371,7 @@ def plan(slots: list[Slot], p: Params) -> Plan:
             ev_at_dl = _ev_pct(p, float(e)) if p.ev_connected else None
         best = None
         for act in actions_for(slot):
-            score = 0.0
+            score = _change_cost(p, act, ev_needed) if t == 0 else 0.0
             outcome = None
             for weight, solar, values in zip(weights, forecasts, value_sets):
                 cost, nb_, ne_, bkw, evkw, gkw = _simulate(slot, b, e, act, p, ev_need, solar[t])
@@ -415,6 +423,17 @@ def plan(slots: list[Slot], p: Params) -> Plan:
         None if ev_at_dl is None else round(ev_at_dl, 1),
         deadline,
     )
+
+
+def _change_cost(p: Params, act: _Action, ev_needed: bool) -> float:
+    """Cost of stopping or changing what is running now (first step only)."""
+    cost = 0.0
+    # Spare-solar charging counts as level 0, and stopping from it is free.
+    if p.ev_level_now_kw is not None and ev_needed and abs(act.ev_kw - p.ev_level_now_kw) > 0.05:
+        cost += p.ev_change_cost
+    if p.battery_mode_now in (MODE_CHARGE, MODE_DISCHARGE) and act.mode != p.battery_mode_now:
+        cost += p.battery_change_cost
+    return cost
 
 
 def _ev_pct(p: Params, delivered_kwh: float) -> float:
