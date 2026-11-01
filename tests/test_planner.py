@@ -252,3 +252,33 @@ def test_keeps_the_car_charging_unless_stopping_saves_real_money():
 
     stopped = plan(_midday(dull_peak=0.5, prices=dear_now), _car_today(ev_soc_pct=74, ev_level_now_kw=7.68)).steps[0]
     assert stopped.ev_kw < 0.05
+
+
+def test_sales_stop_at_the_selling_floor():
+    p = _params(battery_soc_pct=95, sell_floor_pct=40)
+    result = plan(day_slots(START), p)
+    selling = [s for s in result.steps if s.mode == MODE_DISCHARGE]
+    assert selling
+    assert all(s.battery_soc_pct >= 39.5 for s in selling)
+    # The house may still use the energy below the floor.
+    assert min(s.battery_soc_pct for s in result.steps) < 39.5
+
+
+def _morning_spike(hr):
+    # A morning price spike, sun from 9 am to refill the battery.
+    return (0.60, 0.50) if 7 <= hr < 8 else (0.25, 0.03)
+
+
+def test_selling_floor_applies_only_in_its_window():
+    start = datetime(2026, 11, 2, 6, 0, tzinfo=BNE)
+    night_only = _params(battery_soc_pct=60, sell_floor_pct=40, sell_floor_from=(17, 0), sell_floor_until=(6, 30),
+                         deadlines=[start + timedelta(hours=9)])
+    result = plan(day_slots(start, n=24, prices=_morning_spike), night_only)
+    spike = [s for s in result.steps if s.start.hour == 7]
+    assert any(s.mode == MODE_DISCHARGE for s in spike)
+    assert min(s.battery_soc_pct for s in spike) < 39.5  # outside the window it sells below the floor
+    all_day = _params(battery_soc_pct=60, sell_floor_pct=40, sell_floor_from=(0, 0), sell_floor_until=(0, 0),
+                      deadlines=[start + timedelta(hours=9)])
+    result = plan(day_slots(start, n=24, prices=_morning_spike), all_day)
+    spike = [s for s in result.steps if s.start.hour == 7]
+    assert all(s.battery_soc_pct >= 39.5 for s in spike if s.mode == MODE_DISCHARGE)

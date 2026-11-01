@@ -74,6 +74,14 @@ price beats the value of keeping it, after battery wear (5 c/kWh by default)
 and losses, and never below what's needed to meet the target at the peak.
 Turn `switch.energy_planner_allow_selling_to_grid` off to stop selling.
 
+Selling floor: `number.energy_planner_selling_floor` keeps that much charge for
+the night. Between `time.energy_planner_selling_floor_from` and
+`time.energy_planner_selling_floor_until` (15:00 to 07:00 by default) a sale
+never takes the battery below the floor, and a running sale stops there; the
+house can still use the energy below it. Outside that window (for example a
+morning price spike, with the sun to refill the battery) sales may still go
+down to the reserve. 0 (the default) turns the floor off.
+
 The battery never feeds the car: while the car charges, the existing
 `ev_grid_only_charging` rule holds the battery, and where that rule doesn't
 (it only starts from normal mode, so not straight after one of the planner's
@@ -163,6 +171,8 @@ leaves the charger alone until the car is unplugged.
 | `number.energy_planner_ev_target_at_peak` | Car % wanted at the peak (capped at the charge limit set in the car) |
 | `number.energy_planner_ev_state_of_charge_manual` | Car SoC to use while the MINI's CarData SoC sensor is unavailable; it counts up from charger power |
 | `number.energy_planner_ev_battery_size` | Usable car battery, kWh |
+| `number.energy_planner_selling_floor` | Sales stop at this % between the two times below; normal use carries on below it (0 = off) |
+| `time.energy_planner_selling_floor_from` / `_until` | When the selling floor applies (15:00 to 07:00 by default) |
 | `number.energy_planner_battery_reserve` | Never plan below this % (0 by default: the battery normally runs right down). Above 0, Auto holds the battery at this level |
 | `number.energy_planner_battery_wear_cost` | c/kWh charged for every kWh taken out of the battery |
 | `number.energy_planner_grid_import_limit` | kW |

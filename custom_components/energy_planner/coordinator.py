@@ -59,6 +59,9 @@ from .const import (
     SETTING_MODE,
     SETTING_PEAK_START,
     SETTING_RESERVE,
+    SETTING_SELL_FLOOR,
+    SETTING_SELL_FLOOR_FROM,
+    SETTING_SELL_FLOOR_UNTIL,
     SETTING_SOLAR_ESTIMATE,
     SETTING_WEAR,
     SOLAR_BOTH,
@@ -66,7 +69,7 @@ from .const import (
     UPDATE_MINUTES,
 )
 from .control import PS_MODE_FOR, PS_NORMAL, BatteryState, EvState, LastCommand, decide_battery, decide_ev
-from .planner import MODE_NORMAL, Params, Plan, Step, plan
+from .planner import MODE_NORMAL, Params, Plan, Step, plan, sell_floor_applies
 from .watchdog import ResponseTracker, Watchdog
 
 _LOGGER = logging.getLogger(__name__)
@@ -248,16 +251,11 @@ class EnergyPlannerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     @callback
     def _soc_changed(self, event: Event) -> None:
-        """Stop a sale promptly when the battery reaches the reserve."""
+        """Stop a sale promptly when the battery reaches the selling floor or reserve."""
         soc = _num(getattr(event.data.get("new_state"), "state", None))
         last = self._last_battery
-        if (
-            soc is not None
-            and last is not None
-            and last.mode == "discharge"
-            and float(self.settings[SETTING_RESERVE]) > 0
-            and soc <= float(self.settings[SETTING_RESERVE])
-        ):
+        stop_at = max(float(self.settings[SETTING_RESERVE]), self._sell_floor_now(dt_util.utcnow()))
+        if soc is not None and last is not None and last.mode == "discharge" and stop_at > 0 and soc <= stop_at:
             self.hass.async_create_task(self.async_request_refresh())
 
     @callback
@@ -427,6 +425,16 @@ class EnergyPlannerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             limit = min(limit, watts / 1000)
         return limit
 
+    def _sell_floor_now(self, now: datetime) -> float:
+        """The selling floor if its time window covers `now`, else 0."""
+        params = Params(
+            sell_floor_pct=float(self.settings[SETTING_SELL_FLOOR]),
+            sell_floor_from=_hhmm(self.settings[SETTING_SELL_FLOOR_FROM]),
+            sell_floor_until=_hhmm(self.settings[SETTING_SELL_FLOOR_UNTIL]),
+        )
+        local = dt_util.as_local(now)
+        return params.sell_floor_pct if sell_floor_applies(params, local) else 0.0
+
     def _ems_forced(self) -> bool:
         """True when the Sungrow diagnostics show the inverter's EMS in forced mode."""
         diag = self.hass.states.get(SUNGROW_DIAGNOSTICS)
@@ -544,6 +552,9 @@ class EnergyPlannerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             battery_capacity_kwh=float(self.conf(CONF_BATTERY_CAPACITY)),
             battery_soc_pct=soc if soc is not None else 50.0,
             battery_reserve_pct=float(self.settings[SETTING_RESERVE]),
+            sell_floor_pct=float(self.settings[SETTING_SELL_FLOOR]),
+            sell_floor_from=_hhmm(self.settings[SETTING_SELL_FLOOR_FROM]),
+            sell_floor_until=_hhmm(self.settings[SETTING_SELL_FLOOR_UNTIL]),
             battery_target_pct=float(self.settings[SETTING_BATTERY_TARGET]),
             max_charge_kw=max_kw,
             max_discharge_kw=max_kw,
@@ -655,6 +666,7 @@ class EnergyPlannerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             ev_charging=self._ev_power_kw > 1.0 or _kw(self.hass.states.get(self.conf(CONF_EV_POWER) or "")) > 1.0,
             soc_pct=self._float_state(self.conf(CONF_BATTERY_SOC)),
             reserve_pct=float(self.settings[SETTING_RESERVE]),
+            sell_floor_pct=self._sell_floor_now(now),
             inverter_forced=self._inverter_forced(now),
             ems_forced=self._ems_forced(),
             expired=_expired(mode_state, now),
@@ -914,6 +926,14 @@ class EnergyPlannerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             d["start"] = s.start.isoformat()
             steps.append(d)
         return {"steps": steps, "deadline": result.deadline.isoformat() if result.deadline else None}
+
+
+def _hhmm(value) -> tuple[int, int] | None:
+    try:
+        hh, mm = (int(x) for x in str(value).split(":")[:2])
+    except (TypeError, ValueError):
+        return None
+    return hh, mm
 
 
 def _expired(state, now: datetime) -> bool:

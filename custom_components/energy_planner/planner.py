@@ -65,6 +65,10 @@ class Params:
     battery_capacity_kwh: float = 20.0
     battery_soc_pct: float = 50.0
     battery_reserve_pct: float = 10.0
+    sell_floor_pct: float = 0.0  # sales never take the battery below this; the house can still use the rest
+    # Local (hour, minute) times between which the floor applies; None for always.
+    sell_floor_from: tuple[int, int] | None = None
+    sell_floor_until: tuple[int, int] | None = None
     battery_max_pct: float = 100.0
     battery_target_pct: float = 80.0
     max_charge_kw: float = 10.0
@@ -175,6 +179,22 @@ def _actions(p: Params, ev_needed: bool, curtail_ok: bool = False) -> list[_Acti
     return actions
 
 
+def sell_floor_applies(p: Params, when: datetime) -> bool:
+    """True when the selling floor is set and `when` (local time) is inside its window."""
+    if p.sell_floor_pct <= 0:
+        return False
+    if p.sell_floor_from is None or p.sell_floor_until is None:
+        return True
+    start = p.sell_floor_from[0] * 60 + p.sell_floor_from[1]
+    end = p.sell_floor_until[0] * 60 + p.sell_floor_until[1]
+    minute = when.hour * 60 + when.minute
+    if start == end:
+        return True
+    if start < end:
+        return start <= minute < end
+    return minute >= start or minute < end  # overnight
+
+
 def _simulate(slot: Slot, b, e, act: _Action, p: Params, ev_need_kwh: float, solar_kw: float | None = None):
     """Apply one action to arrays of battery energy b and EV energy e.
 
@@ -190,6 +210,11 @@ def _simulate(slot: Slot, b, e, act: _Action, p: Params, ev_need_kwh: float, sol
 
     room_ac = np.maximum(b_max - b, 0.0) / (eta_c * h)
     avail_ac = np.maximum(b - b_min, 0.0) * eta_d / h
+    # What a sale may take: only the energy above the selling floor.
+    b_sell = b_min
+    if sell_floor_applies(p, slot.start):
+        b_sell = max(b_min, p.battery_capacity_kwh * p.sell_floor_pct / 100)
+    sell_ac = np.maximum(b - b_sell, 0.0) * eta_d / h
     zero = np.zeros(np.broadcast(b, e).shape)
 
     ev_ac = zero
@@ -225,7 +250,7 @@ def _simulate(slot: Slot, b, e, act: _Action, p: Params, ev_need_kwh: float, sol
         pd = zero
     else:
         pc = zero
-        pd = np.minimum(act.power_kw, avail_ac)
+        pd = np.minimum(act.power_kw, sell_ac)
     pc = pc + zero
     pd = pd + zero
 
@@ -246,7 +271,7 @@ def _simulate(slot: Slot, b, e, act: _Action, p: Params, ev_need_kwh: float, sol
         + (_CURTAIL_NUDGE if act.curtail else 0.0)
     )
     if act.mode == MODE_DISCHARGE:
-        cost = cost + np.where(avail_ac < act.power_kw * _MIN_DISCHARGE_SHARE, _INFEASIBLE, 0.0)
+        cost = cost + np.where(sell_ac < act.power_kw * _MIN_DISCHARGE_SHARE, _INFEASIBLE, 0.0)
     next_b = b + pc * eta_c * h - pd * h / eta_d
     next_e = e + ev_kwh if (act.ev_kw > 0 or act.ev_solar) else e + zero
     return cost, next_b, next_e, pc - pd, ev_ac, grid

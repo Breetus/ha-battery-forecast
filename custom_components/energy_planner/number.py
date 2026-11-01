@@ -12,6 +12,7 @@ from .const import (
     SETTING_EV_TARGET,
     SETTING_IMPORT_LIMIT,
     SETTING_RESERVE,
+    SETTING_SELL_FLOOR,
     SETTING_WEAR,
 )
 from .entity import PlannerEntity
@@ -21,6 +22,7 @@ NUMBERS = [
     (SETTING_BATTERY_TARGET, "Battery target at peak", 0, 100, 5, PERCENTAGE, "mdi:battery-arrow-up"),
     (SETTING_EV_TARGET, "EV target at peak", 0, 100, 5, PERCENTAGE, "mdi:car-electric"),
     (SETTING_RESERVE, "Battery reserve", 0, 50, 1, PERCENTAGE, "mdi:battery-lock"),
+    (SETTING_SELL_FLOOR, "Selling floor", 0, 100, 5, PERCENTAGE, "mdi:battery-arrow-down-outline"),
     (SETTING_WEAR, "Battery wear cost", 0, 30, 0.5, "c/kWh", "mdi:battery-heart-variant"),
     (SETTING_EV_CAPACITY, "EV battery size", 10, 120, 0.5, UnitOfEnergy.KILO_WATT_HOUR, "mdi:car-battery"),
     (SETTING_IMPORT_LIMIT, "Grid import limit", 3, 30, 0.5, UnitOfPower.KILO_WATT, "mdi:transmission-tower"),

@@ -129,6 +129,14 @@ async def test_settings_are_entities(hass):
 
 async def test_auto_charges_plugged_in_car(hass):
     _, calls = await _setup(hass)
+    # Put the peak almost a day away, so the car can reach its target whatever the time now.
+    an_hour_ago = dt_util.now() - timedelta(hours=1)
+    await hass.services.async_call(
+        "time",
+        "set_value",
+        {"entity_id": "time.energy_planner_peak_price_starts", "time": an_hour_ago.strftime("%H:%M:00")},
+        blocking=True,
+    )
     switch_on = async_mock_service(hass, "switch", "turn_on")
     set_current = async_mock_service(hass, "number", "set_value")
     hass.states.async_set("sensor.charger_status_connector", "Preparing")
@@ -422,3 +430,19 @@ async def test_charge_by_time_is_flagged_while_its_switch_is_unavailable(hass):
     await hass.async_block_till_done()
     problems = hass.states.get("sensor.energy_planner_status").attributes["problems"]
     assert any("Charge by time" in p for p in problems)
+
+
+async def test_selling_floor_settings(hass):
+    entry, _ = await _setup(hass)
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+    assert hass.states.get("number.energy_planner_selling_floor").state == "0.0"
+    assert hass.states.get("time.energy_planner_selling_floor_from").state == "15:00:00"
+    assert hass.states.get("time.energy_planner_selling_floor_until").state == "07:00:00"
+    await hass.services.async_call(
+        "number", "set_value", {"entity_id": "number.energy_planner_selling_floor", "value": 30}, blocking=True
+    )
+    tz = dt_util.get_default_time_zone()
+    evening = dt_util.now().astimezone(tz).replace(hour=20, minute=0)
+    morning = evening.replace(hour=9)
+    assert coordinator._sell_floor_now(evening) == 30.0
+    assert coordinator._sell_floor_now(morning) == 0.0

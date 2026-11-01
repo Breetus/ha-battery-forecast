@@ -52,6 +52,7 @@ class BatteryState:
     ev_charging: bool  # the car is drawing power right now
     soc_pct: float | None = None
     reserve_pct: float | None = None
+    sell_floor_pct: float = 0.0  # a sale stops here; normal use carries on below it
     # PowerSync shows normal, but the inverter has stayed in forced mode (its
     # restore didn't reach the inverter), so the battery isn't serving the house.
     inverter_forced: bool = False
@@ -114,6 +115,11 @@ def decide_battery(step: Step, state: BatteryState, last: LastCommand | None, no
         # from normal, so after one of our commands we hold it ourselves.
         mode, car_hold = MODE_HOLD, True
 
+    floor_reached = False
+    if mode == MODE_DISCHARGE and state.soc_pct is not None and state.sell_floor_pct > 0:
+        if state.soc_pct <= state.sell_floor_pct:
+            mode, power, floor_reached = MODE_NORMAL, 0.0, True
+
     at_reserve = False
     # Only needed for a reserve above empty; at 0% the inverter stops by itself.
     if mode in (MODE_NORMAL, MODE_DISCHARGE) and state.soc_pct is not None and state.reserve_pct:
@@ -144,8 +150,9 @@ def decide_battery(step: Step, state: BatteryState, last: LastCommand | None, no
                 target=MODE_NORMAL,
             )
         if current in (PS_NORMAL, None):
-            return BatteryDecision([], "Normal", target=MODE_NORMAL)
-        return BatteryDecision([Command("restore_normal")], "Returning to normal", mode=MODE_NORMAL, target=MODE_NORMAL)
+            return BatteryDecision([], "Normal (selling floor reached)" if floor_reached else "Normal", target=MODE_NORMAL)
+        status = "Selling floor reached, returning to normal" if floor_reached else "Returning to normal"
+        return BatteryDecision([Command("restore_normal")], status, mode=MODE_NORMAL, target=MODE_NORMAL)
 
     label = {
         MODE_HOLD: "Holding at the reserve"

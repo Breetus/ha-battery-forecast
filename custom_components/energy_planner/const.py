@@ -73,6 +73,9 @@ SETTING_BATTERY_TARGET = "battery_target"
 SETTING_EV_TARGET = "ev_target"
 SETTING_RESERVE = "battery_reserve"
 SETTING_WEAR = "wear_cost"
+SETTING_SELL_FLOOR = "sell_floor"
+SETTING_SELL_FLOOR_FROM = "sell_floor_from"
+SETTING_SELL_FLOOR_UNTIL = "sell_floor_until"
 SETTING_EV_SOC = "ev_soc"
 SETTING_EV_CAPACITY = "ev_capacity"
 SETTING_IMPORT_LIMIT = "import_limit"
@@ -91,6 +94,11 @@ SETTING_DEFAULTS = {
     SETTING_EV_TARGET: 80.0,
     SETTING_RESERVE: 0.0,  # the battery normally runs right down
     SETTING_WEAR: 5.0,  # c/kWh
+    SETTING_SELL_FLOOR: 0.0,  # sales may empty the battery
+    # The floor keeps energy for the night; morning sales may still empty the
+    # battery, since the sun refills it.
+    SETTING_SELL_FLOOR_FROM: "15:00",
+    SETTING_SELL_FLOOR_UNTIL: "07:00",
     SETTING_EV_SOC: 50.0,
     SETTING_EV_CAPACITY: 64.7,  # MINI Countryman SE ALL4 (U25) usable
     SETTING_IMPORT_LIMIT: 14.0,

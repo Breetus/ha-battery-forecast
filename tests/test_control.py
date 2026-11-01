@@ -81,6 +81,17 @@ def test_an_expired_powersync_hold_is_not_an_override():
     assert decide_battery(_step("charge", 10.0), live, None, NOW).override
 
 
+def test_a_sale_stops_at_the_selling_floor():
+    last = LastCommand("discharge", 10.0, NOW - timedelta(minutes=5))
+    state = BatteryState("force_discharge", 25, False, False, soc_pct=39.5, sell_floor_pct=40)
+    d = decide_battery(_step("discharge", 10.0), state, last, NOW)
+    assert [c.service for c in d.commands] == ["restore_normal"]
+    assert "floor" in d.status.lower()
+    # Above the floor the sale carries on.
+    state = BatteryState("force_discharge", 25, False, False, soc_pct=45, sell_floor_pct=40)
+    assert decide_battery(_step("discharge", 10.0), state, last, NOW).commands == []
+
+
 def test_manual_command_takes_over():
     last = LastCommand("normal", 0, NOW - timedelta(minutes=10))
     d = decide_battery(_step("charge", 5.0), _state("force_discharge", 40), last, NOW)

@@ -237,6 +237,8 @@ cards:
     entities:
       - entity: select.energy_planner_solar_forecast
       - entity: switch.energy_planner_allow_selling_to_grid
+      - entity: number.energy_planner_selling_floor
+        name: Selling floor (sales stop here)
       - entity: switch.energy_planner_allow_grid_charging
       - entity: switch.energy_planner_control_ev_charger
       - entity: number.energy_planner_battery_reserve
