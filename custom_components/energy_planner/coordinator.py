@@ -84,6 +84,9 @@ INVERTER_STUCK_SECONDS = 150
 # Between plans, resend a stuck restore at most this many times; after that
 # only the regular plan updates retry it.
 INVERTER_QUICK_RETRIES = 3
+# A PowerSync command this long past its expiry time counts as over, even if
+# PowerSync still shows it.
+EXPIRED_GRACE_SECONDS = 120
 STORE_VERSION = 1
 
 
@@ -608,6 +611,8 @@ class EnergyPlannerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         out = []
         if switch_on(self.hass, "switch.power_sync_optimization_enabled"):
             out.append("PowerSync's own optimiser is on and will fight this one")
+        if switch_on(self.hass, "switch.power_sync_charge_by_time"):
+            out.append("PowerSync's Charge by time is on and charges the battery by itself")
         if control_ev:
             for state in self.hass.states.async_all("switch"):
                 if state.entity_id.startswith("switch.power_sync_") and "solar_surplus" in state.entity_id and state.state == "on":
@@ -650,6 +655,7 @@ class EnergyPlannerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             reserve_pct=float(self.settings[SETTING_RESERVE]),
             inverter_forced=self._inverter_forced(now),
             ems_forced=self._ems_forced(),
+            expired=_expired(mode_state, now),
         )
         decision = decide_battery(step, state, self._last_battery, now)
         self._battery_decision, self._battery_state = decision, state
@@ -906,6 +912,20 @@ class EnergyPlannerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             d["start"] = s.start.isoformat()
             steps.append(d)
         return {"steps": steps, "deadline": result.deadline.isoformat() if result.deadline else None}
+
+
+def _expired(state, now: datetime) -> bool:
+    """True when PowerSync's mode sensor shows a command whose expiry time passed a while ago."""
+    if state is None or state.state in (PS_NORMAL, STATE_UNKNOWN, STATE_UNAVAILABLE):
+        return False
+    attrs = state.attributes
+    raw = attrs.get("expires_at") or attrs.get("force_expires_at")
+    expires = dt_util.parse_datetime(raw) if isinstance(raw, str) else raw if isinstance(raw, datetime) else None
+    if expires is None:
+        return False
+    if expires.tzinfo is None:
+        expires = expires.replace(tzinfo=dt_util.UTC)
+    return (now - expires).total_seconds() > EXPIRED_GRACE_SECONDS
 
 
 def switch_on(hass: HomeAssistant, entity_id: str) -> bool:

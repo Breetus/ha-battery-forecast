@@ -383,3 +383,32 @@ async def test_alerts_when_the_battery_sits_idle_in_normal(hass):
     # Near the inverter's own floor that's expected.
     await coordinator._check_plan_followed(step, dt_util.utcnow(), 6.0, True)
     assert "battery_idle" not in coordinator._watchdog.incidents
+
+
+async def test_takes_over_from_an_expired_powersync_hold(hass):
+    _, calls = await _setup(hass)
+    expired = (dt_util.utcnow() - timedelta(minutes=10)).isoformat()
+    hass.states.async_set(
+        "sensor.power_sync_battery_mode", "hold_soc", {"remaining_minutes": 0, "expires_at": expired, "locked_soc": 4.2}
+    )
+    hass.states.async_set("switch.power_sync_charge_by_time", "on")
+    await hass.services.async_call(
+        "select", "select_option", {"entity_id": "select.energy_planner_mode", "option": "Auto"}, blocking=True
+    )
+    await hass.async_block_till_done()
+    assert calls["force_charge"]
+    status = hass.states.get("sensor.energy_planner_status")
+    assert not status.state.startswith("Manual")
+    assert any("Charge by time" in p for p in status.attributes["problems"])
+
+
+async def test_a_running_powersync_hold_still_pauses_auto(hass):
+    _, calls = await _setup(hass)
+    later = (dt_util.utcnow() + timedelta(minutes=20)).isoformat()
+    hass.states.async_set("sensor.power_sync_battery_mode", "hold_soc", {"remaining_minutes": 20, "expires_at": later})
+    await hass.services.async_call(
+        "select", "select_option", {"entity_id": "select.energy_planner_mode", "option": "Auto"}, blocking=True
+    )
+    await hass.async_block_till_done()
+    assert not calls["force_charge"]
+    assert hass.states.get("sensor.energy_planner_status").state.startswith("Manual")

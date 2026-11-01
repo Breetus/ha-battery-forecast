@@ -143,6 +143,13 @@ Avoid restarting Home Assistant while the planner has a charge or sale running.
 PowerSync's own force charge, force discharge, hold and restore buttons keep
 working. When PowerSync is in a forced mode that Energy Planner didn't ask for,
 Auto steps aside (status shows "Manual … in control") until that command ends.
+PowerSync sometimes keeps showing a command after its time has run out (for
+example its own short hold after a manual discharge); two minutes past the
+command's `expires_at`, Auto takes over again.
+
+PowerSync features that run their own battery or charger plans are listed in
+the status sensor's `problems` attribute: its optimiser, Charge by time, and
+solar surplus EV charging. Turn them off so only one thing controls the battery.
 If you switch the charger on or off or change its current from the UI, Auto
 leaves the charger alone until the car is unplugged.
 

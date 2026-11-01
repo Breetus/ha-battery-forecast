@@ -57,6 +57,9 @@ class BatteryState:
     inverter_forced: bool = False
     # The inverter's EMS is in forced mode right now, whatever PowerSync shows.
     ems_forced: bool = False
+    # PowerSync still shows a forced mode or hold whose time ran out a while ago
+    # (it sometimes never switches its mode back to normal).
+    expired: bool = False
 
 
 @dataclass
@@ -82,6 +85,8 @@ def manual_override(state: BatteryState, last: LastCommand | None, now: datetime
     mode = state.ps_mode
     if mode in (None, PS_NORMAL, "unknown", "unavailable"):
         return False
+    if state.expired:
+        return False  # a command that has run out isn't anyone's anymore
     if mode == PS_HOLD and state.house_hold_active:
         return False  # the house EV rule, which the plan already allows for
     if last is None:

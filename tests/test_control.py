@@ -68,6 +68,19 @@ def test_restores_normal_before_a_sale_from_a_leftover_forced_mode():
     assert [c.service for c in d.commands] == ["force_discharge"]
 
 
+def test_an_expired_powersync_hold_is_not_an_override():
+    # PowerSync's own hold ran out long ago but it still shows hold_soc.
+    stale = BatteryState("hold_soc", 0, False, False, soc_pct=40, expired=True)
+    d = decide_battery(_step("charge", 10.0), stale, None, NOW)
+    assert not d.override
+    assert [c.service for c in d.commands] == ["force_charge"]
+    d = decide_battery(_step("normal"), stale, None, NOW)
+    assert [c.service for c in d.commands] == ["restore_normal"]
+    # While it still has time left, it's someone else's.
+    live = BatteryState("hold_soc", 20, False, False, soc_pct=40)
+    assert decide_battery(_step("charge", 10.0), live, None, NOW).override
+
+
 def test_manual_command_takes_over():
     last = LastCommand("normal", 0, NOW - timedelta(minutes=10))
     d = decide_battery(_step("charge", 5.0), _state("force_discharge", 40), last, NOW)
