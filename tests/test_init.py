@@ -412,3 +412,13 @@ async def test_a_running_powersync_hold_still_pauses_auto(hass):
     await hass.async_block_till_done()
     assert not calls["force_charge"]
     assert hass.states.get("sensor.energy_planner_status").state.startswith("Manual")
+
+
+async def test_charge_by_time_is_flagged_while_its_switch_is_unavailable(hass):
+    entry, _ = await _setup(hass)
+    hass.states.async_set("switch.power_sync_charge_by_time", "unavailable")
+    hass.states.async_set("sensor.power_sync_optimization_status", "disabled", {"charge_by_time_enabled": True})
+    await hass.data[DOMAIN][entry.entry_id].async_refresh()
+    await hass.async_block_till_done()
+    problems = hass.states.get("sensor.energy_planner_status").attributes["problems"]
+    assert any("Charge by time" in p for p in problems)

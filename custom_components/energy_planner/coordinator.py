@@ -611,7 +611,9 @@ class EnergyPlannerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         out = []
         if switch_on(self.hass, "switch.power_sync_optimization_enabled"):
             out.append("PowerSync's own optimiser is on and will fight this one")
-        if switch_on(self.hass, "switch.power_sync_charge_by_time"):
+        status = self.hass.states.get("sensor.power_sync_optimization_status")
+        by_time = status is not None and status.attributes.get("charge_by_time_enabled") in (True, "true", "on")
+        if switch_on(self.hass, "switch.power_sync_charge_by_time") or by_time:
             out.append("PowerSync's Charge by time is on and charges the battery by itself")
         if control_ev:
             for state in self.hass.states.async_all("switch"):
