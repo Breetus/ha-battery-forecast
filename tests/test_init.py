@@ -367,6 +367,33 @@ async def test_resends_restore_when_the_inverter_stays_forced(hass, freezer):
     assert coordinator.stuck_restores == 0
 
 
+async def test_puts_a_forced_inverter_back_under_the_car_hold(hass, freezer):
+    from custom_components.energy_planner.planner import Plan, Step
+
+    entry, calls = await _setup(hass)
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+    step = Step(dt_util.now(), 0.5, "normal", 0, 0, 7.7, 0, 0.0, 1.0, 0.09, 0.04, -1.0, 21, None)
+    coordinator.data["plan"] = Plan([step], 0, None, None, None)
+    coordinator.settings["mode"] = "Auto"
+    # The car charges under the EV rule's hold, but the inverter is forced and stopped.
+    hass.states.async_set("input_boolean.ev_grid_only_hold_active", "on")
+    hass.states.async_set("sensor.power_sync_battery_mode", "hold_soc", {"remaining_minutes": 20})
+    hass.states.async_set("sensor.ev_charging_power", "6900", {"unit_of_measurement": "W"})
+    freezer.tick(timedelta(minutes=5))
+    _forced_diag(hass)
+    await coordinator._tick()
+    assert not calls["restore_normal"]
+    freezer.tick(timedelta(seconds=160))
+    await coordinator._tick()
+    await hass.async_block_till_done()
+    assert len(calls["restore_normal"]) == 1
+    assert len(calls["hold_battery_soc"]) == 1
+    assert coordinator.stuck_restores == 1
+    await coordinator._check_plan_followed(step, dt_util.utcnow(), 21.0, True)
+    assert "inverter_forced" in coordinator._watchdog.incidents
+    assert "spare solar" in coordinator._watchdog.incidents["inverter_forced"].message
+
+
 async def test_alerts_when_the_battery_sits_idle_in_normal(hass):
     from custom_components.energy_planner.planner import Plan, Step
 

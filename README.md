@@ -117,7 +117,8 @@ incident, with a second "Sorted now" message when it clears. It covers:
   SoC over 10 minutes).
 - The car not charging when planned: the charger switch stays off, the car
   draws nothing (check the car's own timer), or the charger was changed by hand.
-- The inverter stuck in forced mode while PowerSync shows normal (see below).
+- The inverter stuck in forced mode while PowerSync shows normal or a hold
+  (see below).
 - The house running on the grid in a normal step while the battery has charge
   (more than 3% above the reserve and the inverter's own minimum SoC) and the
   car isn't charging.
@@ -133,14 +134,23 @@ after a Home Assistant restart in the middle of a sale), its restore leaves the
 inverter forced and stopped: PowerSync shows normal, but the battery neither
 charges nor discharges and the house runs on the grid.
 
+The inverter can also be forced from outside the planner (PowerSync's Charge
+by time, or a schedule outside Home Assistant) while PowerSync shows a hold.
+PowerSync's hold only caps discharge and leaves self-consumption on, so the
+battery still takes spare solar while the car charges; a forced inverter
+under that hold sends the spare solar to the grid instead.
+
 The planner reads the inverter's EMS mode from
 `sensor.power_sync_sungrow_diagnostics` and, in Auto:
 
-- If PowerSync shows normal but the inverter is still forced 2.5 minutes later,
-  it sends `power_sync.restore_normal` again (up to three times between plan
-  updates, then at each update), and alerts after about 15 minutes.
-- Before starting a charge or sale while the inverter is already forced, it
-  sends `restore_normal` first, so PowerSync records self-consumption as the
+- If PowerSync shows normal or a hold but the inverter is still forced 2.5
+  minutes later, it sends `power_sync.restore_normal` (under a hold, followed
+  straight away by `hold_battery_soc`, so the battery still doesn't feed the
+  car), up to three times between plan updates, then at each update, and
+  alerts after about 15 minutes. The alert says when the inverter is charging
+  from the grid by itself.
+- Before starting a charge, sale or hold while the inverter is already forced,
+  it sends `restore_normal` first, so PowerSync records self-consumption as the
   mode to go back to.
 
 `inverter_stuck_restores` on `sensor.energy_planner_status` counts the resends.

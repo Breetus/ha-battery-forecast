@@ -59,6 +59,35 @@ def test_resends_restore_when_the_inverter_stays_forced():
     assert decide_battery(_step("normal"), state, just_sent, NOW).commands == []
 
 
+def test_puts_a_forced_inverter_back_under_the_car_hold():
+    # The EV rule's hold only caps discharge; something outside HA left the
+    # inverter forced and stopped, so the battery can't take the spare solar.
+    state = BatteryState("hold_soc", 20, True, True, soc_pct=21, inverter_forced=True, ems_forced=True)
+    d = decide_battery(_step("normal"), state, None, NOW)
+    assert [c.service for c in d.commands] == ["restore_normal", "hold_battery_soc"]
+    assert d.mode == "hold" and "stuck" in d.status
+    # Not again while PowerSync is still applying it.
+    just_sent = LastCommand("hold", 0, NOW - timedelta(seconds=30))
+    assert decide_battery(_step("normal"), state, just_sent, NOW).commands == []
+    # A clean hold is left alone.
+    clean = BatteryState("hold_soc", 20, True, True, soc_pct=21)
+    assert decide_battery(_step("normal"), clean, None, NOW).commands == []
+    # PowerSync already back to normal: just the restore, the EV rule holds again.
+    normal = BatteryState("normal", None, True, True, soc_pct=21, inverter_forced=True, ems_forced=True)
+    assert [c.service for c in decide_battery(_step("normal"), normal, None, NOW).commands] == ["restore_normal"]
+
+
+def test_puts_a_forced_inverter_back_under_our_own_hold():
+    last = LastCommand("hold", 0, NOW - timedelta(minutes=10))
+    state = BatteryState("hold_soc", 25, False, False, soc_pct=40, inverter_forced=True, ems_forced=True)
+    d = decide_battery(_step("hold"), state, last, NOW)
+    assert [c.service for c in d.commands] == ["restore_normal", "hold_battery_soc"]
+    # A new hold from a forced inverter restores it first too.
+    state = BatteryState("normal", None, False, True, soc_pct=40, ems_forced=True)
+    d = decide_battery(_step("normal"), state, None, NOW)
+    assert [c.service for c in d.commands] == ["restore_normal", "hold_battery_soc"]
+
+
 def test_restores_normal_before_a_sale_from_a_leftover_forced_mode():
     state = BatteryState("normal", None, False, False, soc_pct=50, ems_forced=True)
     d = decide_battery(_step("discharge", 5.0), state, None, NOW)

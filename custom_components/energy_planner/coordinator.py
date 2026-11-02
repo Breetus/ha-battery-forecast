@@ -68,8 +68,8 @@ from .const import (
     SOLAR_CAUTIOUS,
     UPDATE_MINUTES,
 )
-from .control import PS_MODE_FOR, PS_NORMAL, BatteryState, EvState, LastCommand, decide_battery, decide_ev
-from .planner import MODE_NORMAL, Params, Plan, Step, plan, sell_floor_applies
+from .control import PS_HOLD, PS_MODE_FOR, PS_NORMAL, BatteryState, EvState, LastCommand, decide_battery, decide_ev
+from .planner import MODE_HOLD, MODE_NORMAL, Params, Plan, Step, plan, sell_floor_applies
 from .watchdog import ResponseTracker, Watchdog
 
 _LOGGER = logging.getLogger(__name__)
@@ -87,6 +87,8 @@ INVERTER_STUCK_SECONDS = 150
 # Between plans, resend a stuck restore at most this many times; after that
 # only the regular plan updates retry it.
 INVERTER_QUICK_RETRIES = 3
+# Sungrow charge command for a forced charge (0xAA); 0xCC is stop.
+FORCE_CHARGE_CMD = 170
 # A PowerSync command this long past its expiry time counts as over, even if
 # PowerSync still shows it.
 EXPIRED_GRACE_SECONDS = 120
@@ -445,15 +447,29 @@ class EnergyPlannerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return ems == 2
         return str(diag.attributes.get("ems_mode_name") or diag.state or "").lower() == "forced"
 
+    def _diag_attr(self, key: str) -> Any:
+        diag = self.hass.states.get(SUNGROW_DIAGNOSTICS)
+        return diag.attributes.get(key) if diag is not None else None
+
+    def _forced_by(self) -> str:
+        """A hint at who forced the inverter, from its charge command."""
+        if _num(self._diag_attr("charge_cmd")) == FORCE_CHARGE_CMD:
+            return " and charging from the grid by itself (most likely PowerSync's Charge by time)"
+        return ""
+
     def _inverter_forced(self, now: datetime) -> bool:
-        """True when PowerSync has shown normal for a while but the inverter is still forced.
+        """True when PowerSync has shown normal or a hold for a while but the inverter is forced.
 
         PowerSync goes back to whatever mode the inverter was in when a force
         started. If that was itself forced (a restart mid-sale loses its record),
         its "restore" leaves the inverter forced and stopped while it says normal.
+        PowerSync's Charge by time also forces the inverter behind its own
+        battery mode, and its stop leaves it forced and stopped. A hold only
+        caps discharge, so a forced inverter under a hold is wrong too: it
+        stops the battery taking the spare solar.
         """
         mode = self.hass.states.get(self.conf(CONF_BATTERY_MODE) or "")
-        forced = mode is not None and mode.state == PS_NORMAL and self._ems_forced()
+        forced = mode is not None and mode.state in (PS_NORMAL, PS_HOLD) and self._ems_forced()
         if not forced:
             self._forced_since = None
             self._stuck_restores = 0
@@ -687,7 +703,11 @@ class EnergyPlannerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 return f"{decision.status} (PowerSync refused: {err})", decision.override
             if cmd.service == "restore_normal" and state.inverter_forced:
                 self._stuck_restores += 1
-                _LOGGER.warning("Inverter still forced while PowerSync shows normal; resent restore_normal")
+                _LOGGER.warning(
+                    "Inverter still forced (charge command %s) while PowerSync shows %s; resent restore_normal",
+                    self._diag_attr("charge_cmd"),
+                    state.ps_mode,
+                )
             elif cmd.service == "restore_normal" and decision.mode != MODE_NORMAL:
                 _LOGGER.info("Inverter was left in forced mode; restored normal before the new command")
             _LOGGER.info("Sent PowerSync %s %s", cmd.service, cmd.data)
@@ -765,7 +785,7 @@ class EnergyPlannerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if (
             not self._inverter_forced(now)
             or step is None
-            or step.mode != MODE_NORMAL
+            or step.mode not in (MODE_NORMAL, MODE_HOLD)
             or self.settings[SETTING_MODE] != MODE_AUTO
             or self._stuck_restores >= INVERTER_QUICK_RETRIES
         ):
@@ -814,9 +834,12 @@ class EnergyPlannerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             elif self._battery_error:
                 problems["refused"] = f"The plan is '{wanted}', but {self._battery_error}."
             elif state.inverter_forced:
+                held = state.ps_mode == PS_HOLD
                 problems["inverter_forced"] = (
-                    "PowerSync shows normal, but the inverter is still in forced mode, so the battery isn't "
-                    f"covering the house. The planner has resent PowerSync's restore {self._stuck_restores} times."
+                    f"PowerSync shows {'a hold' if held else 'normal'}, but the inverter is still in forced mode"
+                    f"{self._forced_by()}, so the battery "
+                    f"{'can’t take the spare solar' if held else 'isn’t covering the house'}. "
+                    f"The planner has resent PowerSync's restore {self._stuck_restores} times."
                 )
             elif decision.commands and self._battery_attempts >= 3:
                 problems["refused"] = (

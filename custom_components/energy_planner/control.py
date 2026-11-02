@@ -53,8 +53,9 @@ class BatteryState:
     soc_pct: float | None = None
     reserve_pct: float | None = None
     sell_floor_pct: float = 0.0  # a sale stops here; normal use carries on below it
-    # PowerSync shows normal, but the inverter has stayed in forced mode (its
-    # restore didn't reach the inverter), so the battery isn't serving the house.
+    # PowerSync shows normal or a hold, but the inverter has stayed in forced
+    # mode (a restore that didn't land, or PowerSync's own Charge by time), so
+    # the battery isn't serving the house or taking the spare solar.
     inverter_forced: bool = False
     # The inverter's EMS is in forced mode right now, whatever PowerSync shows.
     ems_forced: bool = False
@@ -98,6 +99,11 @@ def manual_override(state: BatteryState, last: LastCommand | None, now: datetime
     return now - last.issued_at > timedelta(seconds=CONFIRM_SECONDS)
 
 
+def _just_sent(last: LastCommand | None, now: datetime) -> bool:
+    """True while PowerSync may still be applying the controller's last command."""
+    return last is not None and now - last.issued_at < timedelta(seconds=CONFIRM_SECONDS)
+
+
 def decide_battery(step: Step, state: BatteryState, last: LastCommand | None, now: datetime) -> BatteryDecision:
     """Return the PowerSync commands that move the battery to the planned mode."""
     if manual_override(state, last, now):
@@ -109,6 +115,19 @@ def decide_battery(step: Step, state: BatteryState, last: LastCommand | None, no
     car_hold = False
     if mode == MODE_NORMAL and state.house_hold_active:
         # The house EV rule is holding the battery while the car charges.
+        if state.inverter_forced and not _just_sent(last, now):
+            # A real hold only caps discharge and leaves self-consumption on, so
+            # the battery still takes the spare solar. Forced and stopped blocks
+            # that, so put the inverter back and hold again straight away.
+            commands = [Command("restore_normal")]
+            if state.ps_mode == PS_HOLD:
+                commands.append(Command("hold_battery_soc", {"duration": COMMAND_MINUTES}))
+            return BatteryDecision(
+                commands,
+                "Holding while the car charges (the inverter was stuck in forced mode)",
+                mode=MODE_HOLD if state.ps_mode == PS_HOLD else MODE_NORMAL,
+                target=MODE_HOLD,
+            )
         return BatteryDecision([], "Normal (battery held while the car charges)", target=MODE_HOLD)
     if mode == MODE_NORMAL and state.ev_charging:
         # The battery never feeds the car. The house rule only starts its hold
@@ -161,6 +180,13 @@ def decide_battery(step: Step, state: BatteryState, last: LastCommand | None, no
         MODE_CHARGE: f"Charging from grid at {power:g} kW",
         MODE_DISCHARGE: f"Selling to grid at {power:g} kW",
     }[mode]
+    if mode == MODE_HOLD and current == PS_HOLD and state.inverter_forced and not pending:
+        return BatteryDecision(
+            [Command("restore_normal"), Command("hold_battery_soc", {"duration": COMMAND_MINUTES})],
+            f"{label} (the inverter was stuck in forced mode)",
+            mode=MODE_HOLD,
+            target=MODE_HOLD,
+        )
     same_power = last is not None and last.mode == mode and abs(last.power_kw - power) < POWER_DEADBAND_KW
     running = current == target and (mode == MODE_HOLD or same_power)
     remaining = state.remaining_minutes
@@ -176,11 +202,13 @@ def decide_battery(step: Step, state: BatteryState, last: LastCommand | None, no
     else:
         cmd = Command("force_discharge", {"duration": str(COMMAND_MINUTES), "power_w": int(power * 1000)})
     commands = [cmd]
-    if mode in (MODE_CHARGE, MODE_DISCHARGE) and current in (PS_NORMAL, None) and state.ems_forced:
+    if current in (PS_NORMAL, None) and state.ems_forced:
         # PowerSync remembers the inverter's mode at the start of a force and
         # goes back to it afterwards. Starting from a leftover forced mode (for
         # example after a restart mid-sale), it would "restore" the inverter to
         # forced and leave the battery idle, so put it back to normal first.
+        # A hold only caps discharge, so it needs the same: from forced mode
+        # it would leave the battery unable to take the spare solar.
         commands.insert(0, Command("restore_normal"))
     return BatteryDecision(commands, label, mode=mode, power_kw=power, target=mode)
 
