@@ -239,7 +239,10 @@ views:
             name: Charge limit set in the car
           - entity: sensor.energy_planner_ev_at_peak
             name: EV expected at peak
+          - entity: sensor.energy_planner_cost_today
+            name: Cost today so far
           - entity: sensor.energy_planner_plan_cost
+            name: Plan cost (rest of plan)
       - type: entities
         title: Preferences
         entities:

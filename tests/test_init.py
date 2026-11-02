@@ -513,3 +513,20 @@ async def test_selling_floor_settings(hass):
     morning = evening.replace(hour=9)
     assert coordinator._sell_floor_now(evening) == 30.0
     assert coordinator._sell_floor_now(morning) == 0.0
+
+
+async def test_counts_todays_grid_cost(hass, freezer):
+    entry, _ = await _setup(hass)
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+    hass.states.async_set("sensor.power_sync_current_import_price", "0.40")
+    hass.states.async_set("sensor.power_sync_current_export_price", "0.25")
+    hass.states.async_set("sensor.power_sync_grid_power", "2.0", {"unit_of_measurement": "kW"})
+    await coordinator._add_cost()
+    start = coordinator.cost_today
+    freezer.tick(timedelta(seconds=90))
+    await coordinator._add_cost()  # 2 kW for 90 s at 40c
+    assert abs(coordinator.cost_today - start - 2 * 90 / 3600 * 0.40) < 1e-9
+    hass.states.async_set("sensor.power_sync_grid_power", "-8.0", {"unit_of_measurement": "kW"})
+    freezer.tick(timedelta(hours=1))
+    await coordinator._add_cost()  # a long gap counts only 2 minutes
+    assert abs(coordinator.cost_today - start - (0.02 - 8 * 120 / 3600 * 0.25)) < 1e-9

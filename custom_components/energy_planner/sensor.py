@@ -50,6 +50,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
             PeakSocSensor(c, "battery_at_peak", "Battery at peak", "battery_soc_at_deadline"),
             PeakSocSensor(c, "ev_at_peak", "EV at peak", "ev_soc_at_deadline"),
             CostSensor(c),
+            CostTodaySensor(c),
             ChargingSocSensor(c),
         ]
     )
@@ -153,6 +154,25 @@ class CostSensor(PlannerEntity, SensorEntity):
         if not result or not result.steps:
             return {}
         return {"horizon_end": (result.steps[-1].start).isoformat(), "note": "Expected net grid cost over the plan, after battery wear"}
+
+
+class CostTodaySensor(PlannerEntity, SensorEntity):
+    """What the grid has actually cost since midnight, at the live Amber prices."""
+
+    _attr_device_class = SensorDeviceClass.MONETARY
+    _attr_native_unit_of_measurement = "AUD"
+    _attr_icon = "mdi:cash-clock"
+
+    def __init__(self, c):
+        super().__init__(c, "cost_today", "Cost today")
+
+    @property
+    def native_value(self):
+        return round(self.coordinator.cost_today, 2)
+
+    @property
+    def extra_state_attributes(self):
+        return {"note": "Grid imports minus feed-in earnings since midnight, at the live prices"}
 
 
 class ChargingSocSensor(PlannerEntity, SensorEntity):

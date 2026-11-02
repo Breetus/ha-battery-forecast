@@ -98,6 +98,8 @@ FORCE_STOP_CMD = 0xCC
 RESTORE_GLITCH_SECONDS = 600
 EXTERNAL_DEBOUNCE_SECONDS = 60
 EXTERNAL_ALERT_AFTER = timedelta(minutes=5)
+# Today's cost: longer gaps between samples (a restart) count only this long.
+COST_MAX_GAP_SECONDS = 120
 # An export limit under 1 kW with feed-in at or above 0c counts as stuck after this.
 EXPORT_STUCK_AFTER = timedelta(minutes=10)
 # A PowerSync command this long past its expiry time counts as over, even if
@@ -139,6 +141,10 @@ class EnergyPlannerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._stuck_restores = 0
         self._prev_ps_mode: str | None = None
         self._low_export_since: datetime | None = None
+        # Realised grid cost since local midnight ($, negative is earnings).
+        self.cost_today = 0.0
+        self._cost_day: str | None = None
+        self._cost_sampled: datetime | None = None
         self._export_limit_stuck = False
         self._force_ended_at: datetime | None = None
 
@@ -150,6 +156,9 @@ class EnergyPlannerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     async def async_setup(self) -> None:
         stored = await self._store.async_load() or {}
+        if stored.get("cost_day") == dt_util.now().date().isoformat():
+            self._cost_day = stored["cost_day"]
+            self.cost_today = float(stored.get("cost_today") or 0.0)
         last = stored.get("last_battery")
         if last:
             try:
@@ -207,7 +216,9 @@ class EnergyPlannerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             {
                 "last_battery": None
                 if last is None
-                else {"mode": last.mode, "power_kw": last.power_kw, "issued_at": last.issued_at.isoformat()}
+                else {"mode": last.mode, "power_kw": last.power_kw, "issued_at": last.issued_at.isoformat()},
+                "cost_day": self._cost_day,
+                "cost_today": round(self.cost_today, 4),
             }
         )
 
@@ -848,8 +859,29 @@ class EnergyPlannerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         return decision.status
 
     async def _tick(self, _now=None) -> None:
+        await self._add_cost()
         await self._watch_inverter()
         await self._follow_solar()
+
+    async def _add_cost(self) -> None:
+        """Add the grid energy since the last sample at the live prices to today's cost."""
+        now = dt_util.utcnow()
+        day = dt_util.as_local(now).date().isoformat()
+        if day != self._cost_day:
+            self._cost_day, self.cost_today, self._cost_sampled = day, 0.0, None
+        last, self._cost_sampled = self._cost_sampled, now
+        grid = self._live_kw(CONF_GRID_POWER)  # + import, - export
+        buy = self._float_state("sensor.power_sync_current_import_price")
+        sell = self._float_state("sensor.power_sync_current_export_price")
+        if last is None or grid is None:
+            return
+        hours = min((now - last).total_seconds(), COST_MAX_GAP_SECONDS) / 3600
+        if grid > 0 and buy is not None:
+            self.cost_today += grid * hours * buy
+        elif grid < 0 and sell is not None:
+            self.cost_today -= -grid * hours * sell
+        if dt_util.as_local(now).minute % 10 == 0 and (last.minute != now.minute):
+            await self._save()
 
     async def _watch_inverter(self) -> None:
         """Between plans, put a stuck inverter back to normal."""
