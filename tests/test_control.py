@@ -88,6 +88,14 @@ def test_puts_a_forced_inverter_back_under_our_own_hold():
     assert [c.service for c in d.commands] == ["restore_normal", "hold_battery_soc"]
 
 
+def test_stands_aside_for_an_external_controller():
+    state = BatteryState("normal", None, False, False, soc_pct=40, ems_forced=True, external=True)
+    assert decide_battery(_step("charge", 5.0), state, None, NOW).commands == []
+    # A hold for the car only caps discharge, so it goes on without a restore.
+    state = BatteryState("normal", None, False, True, soc_pct=40, ems_forced=True, external=True)
+    assert [c.service for c in decide_battery(_step("normal"), state, None, NOW).commands] == ["hold_battery_soc"]
+
+
 def test_restores_normal_before_a_sale_from_a_leftover_forced_mode():
     state = BatteryState("normal", None, False, False, soc_pct=50, ems_forced=True)
     d = decide_battery(_step("discharge", 5.0), state, None, NOW)

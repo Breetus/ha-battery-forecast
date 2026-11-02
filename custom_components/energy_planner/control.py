@@ -53,15 +53,17 @@ class BatteryState:
     soc_pct: float | None = None
     reserve_pct: float | None = None
     sell_floor_pct: float = 0.0  # a sale stops here; normal use carries on below it
-    # PowerSync shows normal or a hold, but the inverter has stayed in forced
-    # mode (a restore that didn't land, or PowerSync's own Charge by time), so
-    # the battery isn't serving the house or taking the spare solar.
+    # PowerSync's own restore left the inverter forced while it shows normal or
+    # a hold, so the battery isn't serving the house or taking the spare solar.
     inverter_forced: bool = False
     # The inverter's EMS is in forced mode right now, whatever PowerSync shows.
     ems_forced: bool = False
     # PowerSync still shows a forced mode or hold whose time ran out a while ago
     # (it sometimes never switches its mode back to normal).
     expired: bool = False
+    # Something outside Home Assistant (Amber SmartShift) has forced the
+    # inverter. The planner leaves it alone and doesn't start its own forces.
+    external: bool = False
 
 
 @dataclass
@@ -111,6 +113,9 @@ def decide_battery(step: Step, state: BatteryState, last: LastCommand | None, no
 
     mode = step.mode
     power = step.power_kw
+
+    if state.external and mode in (MODE_CHARGE, MODE_DISCHARGE) and state.ps_mode in (PS_NORMAL, PS_HOLD, None):
+        return BatteryDecision([], "Standing aside: another controller (SmartShift?) has the inverter", target=mode, power_kw=power)
 
     car_hold = False
     if mode == MODE_NORMAL and state.house_hold_active:
@@ -202,7 +207,7 @@ def decide_battery(step: Step, state: BatteryState, last: LastCommand | None, no
     else:
         cmd = Command("force_discharge", {"duration": str(COMMAND_MINUTES), "power_w": int(power * 1000)})
     commands = [cmd]
-    if current in (PS_NORMAL, None) and state.ems_forced:
+    if current in (PS_NORMAL, None) and state.ems_forced and not state.external:
         # PowerSync remembers the inverter's mode at the start of a force and
         # goes back to it afterwards. Starting from a leftover forced mode (for
         # example after a restart mid-sale), it would "restore" the inverter to

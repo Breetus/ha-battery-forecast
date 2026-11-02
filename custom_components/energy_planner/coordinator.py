@@ -68,8 +68,8 @@ from .const import (
     SOLAR_CAUTIOUS,
     UPDATE_MINUTES,
 )
-from .control import PS_HOLD, PS_MODE_FOR, PS_NORMAL, BatteryState, EvState, LastCommand, decide_battery, decide_ev
-from .planner import MODE_HOLD, MODE_NORMAL, Params, Plan, Step, plan, sell_floor_applies
+from .control import PS_FORCE_CHARGE, PS_FORCE_DISCHARGE, PS_HOLD, PS_MODE_FOR, PS_NORMAL, BatteryState, EvState, LastCommand, decide_battery, decide_ev
+from .planner import MODE_CHARGE, MODE_DISCHARGE, MODE_HOLD, MODE_NORMAL, Params, Plan, Step, plan, sell_floor_applies
 from .watchdog import ResponseTracker, Watchdog
 
 _LOGGER = logging.getLogger(__name__)
@@ -87,8 +87,17 @@ INVERTER_STUCK_SECONDS = 150
 # Between plans, resend a stuck restore at most this many times; after that
 # only the regular plan updates retry it.
 INVERTER_QUICK_RETRIES = 3
-# Sungrow charge command for a forced charge (0xAA); 0xCC is stop.
-FORCE_CHARGE_CMD = 170
+# Sungrow charge commands in forced mode.
+FORCE_CHARGE_CMD = 0xAA
+FORCE_DISCHARGE_CMD = 0xBB
+FORCE_STOP_CMD = 0xCC
+# A forced inverter counts as PowerSync's own restore gone wrong only within
+# this long after one of PowerSync's forces ended, and only if it was forced
+# from that moment. Anything else forced it (Amber SmartShift, for one): the
+# planner leaves that alone and only alerts when it clashes with the plan.
+RESTORE_GLITCH_SECONDS = 600
+EXTERNAL_DEBOUNCE_SECONDS = 60
+EXTERNAL_ALERT_AFTER = timedelta(minutes=5)
 # A PowerSync command this long past its expiry time counts as over, even if
 # PowerSync still shows it.
 EXPIRED_GRACE_SECONDS = 120
@@ -126,6 +135,8 @@ class EnergyPlannerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._ev_off_at: datetime | None = None
         self._forced_since: datetime | None = None
         self._stuck_restores = 0
+        self._prev_ps_mode: str | None = None
+        self._force_ended_at: datetime | None = None
 
     # ----- configuration -------------------------------------------------
 
@@ -451,33 +462,81 @@ class EnergyPlannerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         diag = self.hass.states.get(SUNGROW_DIAGNOSTICS)
         return diag.attributes.get(key) if diag is not None else None
 
-    def _forced_by(self) -> str:
-        """A hint at who forced the inverter, from its charge command."""
-        if _num(self._diag_attr("charge_cmd")) == FORCE_CHARGE_CMD:
-            return " and charging from the grid by itself (most likely PowerSync's Charge by time)"
-        return ""
-
-    def _inverter_forced(self, now: datetime) -> bool:
-        """True when PowerSync has shown normal or a hold for a while but the inverter is forced.
-
-        PowerSync goes back to whatever mode the inverter was in when a force
-        started. If that was itself forced (a restart mid-sale loses its record),
-        its "restore" leaves the inverter forced and stopped while it says normal.
-        PowerSync's Charge by time also forces the inverter behind its own
-        battery mode, and its stop leaves it forced and stopped. A hold only
-        caps discharge, so a forced inverter under a hold is wrong too: it
-        stops the battery taking the spare solar.
-        """
+    def _forced_now(self, now: datetime) -> tuple[bool, float]:
+        """Whether the inverter is forced while PowerSync shows normal or a hold, and for how long (s)."""
         mode = self.hass.states.get(self.conf(CONF_BATTERY_MODE) or "")
+        if mode is not None:
+            if self._prev_ps_mode in (PS_FORCE_CHARGE, PS_FORCE_DISCHARGE) and mode.state in (PS_NORMAL, PS_HOLD):
+                self._force_ended_at = mode.last_changed
+            self._prev_ps_mode = mode.state
         forced = mode is not None and mode.state in (PS_NORMAL, PS_HOLD) and self._ems_forced()
         if not forced:
             self._forced_since = None
             self._stuck_restores = 0
-            return False
+            return False, 0.0
         if self._forced_since is None:
             self._forced_since = now
         since = max(self._forced_since, mode.last_changed)
-        return (now - since).total_seconds() >= INVERTER_STUCK_SECONDS
+        return True, (now - since).total_seconds()
+
+    def _restore_glitch(self, now: datetime) -> bool:
+        """True when the inverter has been forced since one of PowerSync's forces ended, a short while ago."""
+        ended = self._force_ended_at
+        return (
+            ended is not None
+            and self._forced_since is not None
+            and self._forced_since <= ended + timedelta(seconds=90)
+            and (now - ended).total_seconds() <= RESTORE_GLITCH_SECONDS
+        )
+
+    def _inverter_forced(self, now: datetime) -> bool:
+        """True when PowerSync's own restore left the inverter forced (the planner puts it back).
+
+        PowerSync goes back to whatever mode the inverter was in when a force
+        started. If that was itself forced (a restart mid-sale loses its record),
+        its "restore" leaves the inverter forced and stopped while it says normal.
+        """
+        forced, seconds = self._forced_now(now)
+        return forced and self._restore_glitch(now) and seconds >= INVERTER_STUCK_SECONDS
+
+    def _external_control(self, now: datetime) -> bool:
+        """True when something outside Home Assistant (Amber SmartShift) has forced the inverter."""
+        forced, seconds = self._forced_now(now)
+        return forced and not self._restore_glitch(now) and seconds >= EXTERNAL_DEBOUNCE_SECONDS
+
+    def _external_clash(self, step: Step, state: BatteryState) -> str | None:
+        """A problem message when another controller's command stops the planned charge or discharge."""
+        cmd = _num(self._diag_attr("charge_cmd"))
+        if state.external:
+            pass
+        elif state.ps_mode in (PS_FORCE_CHARGE, PS_FORCE_DISCHARGE) and self._ems_forced():
+            # The planner's own force is running; did something else replace it?
+            expected = FORCE_CHARGE_CMD if state.ps_mode == PS_FORCE_CHARGE else FORCE_DISCHARGE_CMD
+            if cmd is None or cmd == expected:
+                return None
+        else:
+            return None
+        if step.mode == MODE_CHARGE:
+            want, ok = f"charge from the grid at {step.power_kw:g} kW", cmd == FORCE_CHARGE_CMD
+        elif step.mode == MODE_DISCHARGE:
+            want, ok = f"sell at {step.power_kw:g} kW", cmd == FORCE_DISCHARGE_CMD
+        elif step.battery_kw > 0.5:
+            want, ok = f"store about {step.battery_kw:.1f} kW of spare solar", cmd == FORCE_CHARGE_CMD
+        elif step.battery_kw < -0.5:
+            want, ok = "run the house from the battery", cmd == FORCE_DISCHARGE_CMD
+        else:
+            return None
+        if ok:
+            return None
+        doing = {
+            FORCE_CHARGE_CMD: "forced charge",
+            FORCE_DISCHARGE_CMD: "forced discharge",
+            FORCE_STOP_CMD: "forced stop (battery idle)",
+        }.get(int(cmd) if cmd is not None else -1, "forced mode")
+        return (
+            f"Amber SmartShift (or another controller outside Home Assistant) has the inverter on {doing}, "
+            f"but the plan wanted to {want}. The planner is leaving it alone."
+        )
 
     def _battery_idle(self, soc: float | None) -> str | None:
         """A problem message when the battery should run the house but the grid does."""
@@ -685,6 +744,7 @@ class EnergyPlannerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             sell_floor_pct=self._sell_floor_now(now),
             inverter_forced=self._inverter_forced(now),
             ems_forced=self._ems_forced(),
+            external=self._external_control(now),
             expired=_expired(mode_state, now),
         )
         decision = decide_battery(step, state, self._last_battery, now)
@@ -703,11 +763,7 @@ class EnergyPlannerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 return f"{decision.status} (PowerSync refused: {err})", decision.override
             if cmd.service == "restore_normal" and state.inverter_forced:
                 self._stuck_restores += 1
-                _LOGGER.warning(
-                    "Inverter still forced (charge command %s) while PowerSync shows %s; resent restore_normal",
-                    self._diag_attr("charge_cmd"),
-                    state.ps_mode,
-                )
+                _LOGGER.warning("Inverter still forced while PowerSync shows %s; resent restore_normal", state.ps_mode)
             elif cmd.service == "restore_normal" and decision.mode != MODE_NORMAL:
                 _LOGGER.info("Inverter was left in forced mode; restored normal before the new command")
             _LOGGER.info("Sent PowerSync %s %s", cmd.service, cmd.data)
@@ -836,9 +892,8 @@ class EnergyPlannerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             elif state.inverter_forced:
                 held = state.ps_mode == PS_HOLD
                 problems["inverter_forced"] = (
-                    f"PowerSync shows {'a hold' if held else 'normal'}, but the inverter is still in forced mode"
-                    f"{self._forced_by()}, so the battery "
-                    f"{'can’t take the spare solar' if held else 'isn’t covering the house'}. "
+                    f"PowerSync shows {'a hold' if held else 'normal'}, but the inverter is still in forced mode, "
+                    f"so the battery {'can’t take the spare solar' if held else 'isn’t covering the house'}. "
                     f"The planner has resent PowerSync's restore {self._stuck_restores} times."
                 )
             elif decision.commands and self._battery_attempts >= 3:
@@ -855,10 +910,14 @@ class EnergyPlannerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     problems["response"] = issue
             else:
                 self._response.reset()
+            clash = None if decision.override else self._external_clash(step, state)
+            if clash:
+                problems["external"] = clash
             if (
                 decision.target == MODE_NORMAL
                 and not decision.override
                 and not state.inverter_forced
+                and not state.external
                 and not state.house_hold_active
                 and not state.ev_charging
             ):
@@ -887,7 +946,7 @@ class EnergyPlannerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     "Check the car's own charging timer or charge limit."
                 )
 
-        alerts, resolved = self._watchdog.update(now, problems)
+        alerts, resolved = self._watchdog.update(now, problems, {"external": EXTERNAL_ALERT_AFTER})
         for message in alerts:
             await self._notify(message)
         for message in resolved:

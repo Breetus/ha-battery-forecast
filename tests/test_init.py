@@ -344,8 +344,14 @@ async def test_resends_restore_when_the_inverter_stays_forced(hass, freezer):
     step = Step(dt_util.now(), 0.5, "normal", 0, 0, 0.0, 0, 0.0, 1.0, 0.20, 0.10, -1.0, 50, None)
     coordinator.data["plan"] = Plan([step], 0, None, None, None)
     coordinator.settings["mode"] = "Auto"
-    # PowerSync shows normal; its restore left the inverter forced and stopped.
+    # PowerSync's force has just ended; its restore left the inverter forced and stopped.
+    hass.states.async_set("sensor.power_sync_battery_mode", "force_discharge")
     _forced_diag(hass)
+    await coordinator._tick()
+    hass.states.async_set("sensor.power_sync_battery_mode", "normal")
+    await hass.async_block_till_done()
+    calls["restore_normal"].clear()  # the plan update on the mode change
+    coordinator.data["plan"] = Plan([step], 0, None, None, None)
     await coordinator._tick()
     assert not calls["restore_normal"]  # give PowerSync's own restore time to land
     freezer.tick(timedelta(seconds=160))
@@ -367,31 +373,41 @@ async def test_resends_restore_when_the_inverter_stays_forced(hass, freezer):
     assert coordinator.stuck_restores == 0
 
 
-async def test_puts_a_forced_inverter_back_under_the_car_hold(hass, freezer):
+async def test_leaves_smartshift_alone_but_alerts_when_it_blocks_the_plan(hass, freezer):
     from custom_components.energy_planner.planner import Plan, Step
 
     entry, calls = await _setup(hass)
     coordinator = hass.data[DOMAIN][entry.entry_id]
-    step = Step(dt_util.now(), 0.5, "normal", 0, 0, 7.7, 0, 0.0, 1.0, 0.09, 0.04, -1.0, 21, None)
+    # The plan stores spare solar while the car charges under the EV rule's hold.
+    step = Step(dt_util.now(), 0.5, "normal", 0, 2.0, 7.7, 0, 10.0, 1.0, 0.09, 0.04, -1.0, 25, None)
     coordinator.data["plan"] = Plan([step], 0, None, None, None)
     coordinator.settings["mode"] = "Auto"
-    # The car charges under the EV rule's hold, but the inverter is forced and stopped.
     hass.states.async_set("input_boolean.ev_grid_only_hold_active", "on")
     hass.states.async_set("sensor.power_sync_battery_mode", "hold_soc", {"remaining_minutes": 20})
     hass.states.async_set("sensor.ev_charging_power", "6900", {"unit_of_measurement": "W"})
     freezer.tick(timedelta(minutes=5))
+    # SmartShift puts the inverter in forced stop from the cloud.
     _forced_diag(hass)
-    await coordinator._tick()
-    assert not calls["restore_normal"]
-    freezer.tick(timedelta(seconds=160))
-    await coordinator._tick()
+    for _ in range(12):
+        freezer.tick(timedelta(seconds=30))
+        await coordinator._tick()
     await hass.async_block_till_done()
-    assert len(calls["restore_normal"]) == 1
-    assert len(calls["hold_battery_soc"]) == 1
-    assert coordinator.stuck_restores == 1
+    assert not calls["restore_normal"] and not calls["hold_battery_soc"]
     await coordinator._check_plan_followed(step, dt_util.utcnow(), 21.0, True)
-    assert "inverter_forced" in coordinator._watchdog.incidents
-    assert "spare solar" in coordinator._watchdog.incidents["inverter_forced"].message
+    assert "SmartShift" in coordinator._watchdog.incidents["external"].message
+    assert "spare solar" in coordinator._watchdog.incidents["external"].message
+    # A planned charge isn't started over it either.
+    charge = Step(dt_util.now(), 0.5, "charge", 5.0, 5.0, 0, 5.0, 0.0, 1.0, 0.09, 0.04, 0.2, 40, None)
+    coordinator.data["plan"] = Plan([charge], 0, None, None, None)
+    status, _ = await coordinator._drive_battery(coordinator.data["plan"], dt_util.utcnow(), True)
+    assert not calls["force_charge"] and "Standing aside" in status
+    # SmartShift charging while the plan charges is no clash.
+    hass.states.async_set(
+        "sensor.power_sync_sungrow_diagnostics", "forced", {"ems_mode": 2, "ems_mode_name": "forced", "charge_cmd": 170}
+    )
+    await coordinator._drive_battery(coordinator.data["plan"], dt_util.utcnow(), True)
+    await coordinator._check_plan_followed(charge, dt_util.utcnow(), 40.0, True)
+    assert "external" not in coordinator._watchdog.incidents
 
 
 async def test_alerts_when_the_battery_sits_idle_in_normal(hass):
