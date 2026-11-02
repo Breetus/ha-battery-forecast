@@ -203,6 +203,16 @@ cards:
           name_in_header: false
         data_generator: |
           return (entity.attributes.steps || []).map(s => [new Date(s.start).getTime(), s.battery_soc_pct]);
+  # Copied from the home dashboard's Battery tab.
+  - type: statistics-graph
+    title: Solar Generation
+    chart_type: line
+    period: 5minute
+    entities:
+      - sensor.power_sync_solar_power
+    stat_types:
+      - mean
+    days_to_show: 1.1
   - type: entities
     title: Control
     entities:
