@@ -288,6 +288,30 @@ async def test_plans_on_the_inverters_own_export_limit(hass):
     assert hass.states.get("sensor.energy_planner_status").attributes["export_limit_kw"] == 10.0
 
 
+async def test_flags_an_export_limit_left_low_after_curtailment(hass, freezer):
+    entry, _ = await _setup(hass)
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+    coordinator.settings["mode"] = "Auto"
+    # Feed-in is back above 0c but PowerSync's restore left the limit at 50 W.
+    hass.states.async_set("sensor.power_sync_current_export_price", "0.27")
+    hass.states.async_set("sensor.power_sync_sungrow_diagnostics", "ok", {"export_limit_w": 50, "export_limit_enabled": True})
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
+    assert hass.states.get("sensor.energy_planner_status").attributes["export_limit_kw"] == 10.0
+    freezer.tick(timedelta(minutes=11))
+    await coordinator.async_refresh()
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
+    assert hass.states.get("sensor.energy_planner_status").attributes["export_limit_kw"] == 0.05
+    assert "export_limit" in coordinator._watchdog.incidents
+    # A negative feed-in is real curtailment.
+    hass.states.async_set("sensor.power_sync_current_export_price", "-0.01")
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
+    assert hass.states.get("sensor.energy_planner_status").attributes["export_limit_kw"] == 10.0
+    assert "export_limit" not in coordinator._watchdog.incidents
+
+
 async def test_charging_soc_shows_only_during_the_planners_charge(hass):
     _, calls = await _setup(hass)
     assert hass.states.get("sensor.energy_planner_battery_while_planner_charges").state == "unavailable"

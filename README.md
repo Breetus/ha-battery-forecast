@@ -90,6 +90,10 @@ while the car charges.
 
 Sales are planned up to the inverter's own export limit (read from PowerSync's
 Sungrow diagnostics sensor) or the configured limit, whichever is lower.
+A limit under 1 kW is normally PowerSync curtailing a negative feed-in and is
+ignored. If it stays under 1 kW for 10 minutes while feed-in is at or above 0c
+(PowerSync's curtailment restore has left it at its 50 W floor before), the
+planner plans on it and alerts that the export limit is stuck.
 
 Grid import (house + battery charging + car) is kept under the grid import
 limit (14 kW by default), which also keeps the Ocular charger's own load

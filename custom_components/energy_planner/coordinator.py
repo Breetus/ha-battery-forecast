@@ -98,6 +98,8 @@ FORCE_STOP_CMD = 0xCC
 RESTORE_GLITCH_SECONDS = 600
 EXTERNAL_DEBOUNCE_SECONDS = 60
 EXTERNAL_ALERT_AFTER = timedelta(minutes=5)
+# An export limit under 1 kW with feed-in at or above 0c counts as stuck after this.
+EXPORT_STUCK_AFTER = timedelta(minutes=10)
 # A PowerSync command this long past its expiry time counts as over, even if
 # PowerSync still shows it.
 EXPIRED_GRACE_SECONDS = 120
@@ -136,6 +138,8 @@ class EnergyPlannerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._forced_since: datetime | None = None
         self._stuck_restores = 0
         self._prev_ps_mode: str | None = None
+        self._low_export_since: datetime | None = None
+        self._export_limit_stuck = False
         self._force_ended_at: datetime | None = None
 
     # ----- configuration -------------------------------------------------
@@ -433,8 +437,22 @@ class EnergyPlannerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         enabled = next(
             (diag.attributes[k] for k in ("export_limit_enabled", "export_limit_enable") if k in diag.attributes), True
         )
-        # Near zero is PowerSync curtailing a negative feed-in, not the inverter's setting.
-        if watts is not None and watts >= 1000 and enabled not in (False, "false", "off", 0):
+        on = enabled not in (False, "false", "off", 0)
+        low = watts is not None and watts < 1000 and on
+        # Near zero is normally PowerSync curtailing a negative feed-in, not the
+        # inverter's setting. With feed-in at or above 0c PowerSync should have
+        # put it back; if it stays low (its restore has written its 50 W floor
+        # before), plan on what the inverter really allows and say so.
+        price = self._float_state("sensor.power_sync_current_export_price")
+        now = dt_util.utcnow()
+        if low and price is not None and price >= 0:
+            self._low_export_since = self._low_export_since or now
+        else:
+            self._low_export_since = None
+        self._export_limit_stuck = (
+            self._low_export_since is not None and now - self._low_export_since >= EXPORT_STUCK_AFTER
+        )
+        if watts is not None and on and (watts >= 1000 or self._export_limit_stuck):
             limit = min(limit, watts / 1000)
         return limit
 
@@ -880,6 +898,14 @@ class EnergyPlannerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         wanted = describe(step)
         decision = getattr(self, "_battery_decision", None)
         state = getattr(self, "_battery_state", None)
+        if self._export_limit_stuck:
+            diag = self.hass.states.get(SUNGROW_DIAGNOSTICS)
+            watts = _num(diag.attributes.get("export_limit_w")) if diag is not None else None
+            problems["export_limit"] = (
+                f"The inverter's export limit is stuck at {watts or 0:.0f} W although feed-in isn't negative "
+                "(PowerSync's curtailment restore didn't put it back), so the battery can't sell. "
+                "The planner is planning on that limit until it's fixed."
+            )
         if decision is not None and state is not None:
             if decision.override:
                 who = self._powersync_source(state.ps_mode)
@@ -946,7 +972,7 @@ class EnergyPlannerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     "Check the car's own charging timer or charge limit."
                 )
 
-        alerts, resolved = self._watchdog.update(now, problems, {"external": EXTERNAL_ALERT_AFTER})
+        alerts, resolved = self._watchdog.update(now, problems, {"external": EXTERNAL_ALERT_AFTER, "export_limit": timedelta(0)})
         for message in alerts:
             await self._notify(message)
         for message in resolved:
