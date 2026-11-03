@@ -88,6 +88,14 @@ The battery never feeds the car: while the car charges, the existing
 own commands) the planner holds it itself. It never plans a force discharge
 while the car charges.
 
+A Sungrow forced charge caps the battery at the commanded power, so any spare
+solar above it would be exported. When the live solar left after the house
+and the car already covers a planned grid charge (by 0.5 kW), the planner
+leaves the battery in normal mode instead, and it soaks up all the spare solar;
+it goes back to the forced charge if the spare solar falls 0.5 kW below the
+plan. A running charge or sale keeps its power for at least 10 minutes, since
+every change restarts PowerSync's command.
+
 Sales are planned up to the inverter's own export limit (read from PowerSync's
 Sungrow diagnostics sensor) or the configured limit, whichever is lower.
 A limit under 1 kW is normally PowerSync curtailing a negative feed-in and is

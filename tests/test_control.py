@@ -257,3 +257,29 @@ def test_spare_unknown_falls_back_to_the_plan():
 def test_no_ride_out_once_the_sun_has_gone():
     dusk = decide_ev(_solar_step(), EvState(True, True, 10, spare_kw=0.0, sun_kw=0.1, spare_short_for_s=10), voltage=240)
     assert dusk.switch_on is False
+
+
+def test_spare_solar_that_covers_the_charge_uses_normal_mode():
+    # 11 kW of sun, 3 kW house: a 7.5 kW forced charge would export the rest.
+    state = BatteryState("force_charge", 25, False, False, soc_pct=50, spare_kw=8.1)
+    last = LastCommand("charge", 7.5, NOW - timedelta(minutes=20))
+    d = decide_battery(_step("charge", 7.5), state, last, NOW)
+    assert [c.service for c in d.commands] == ["restore_normal"]
+    # Once normal, it stays normal until the sun drops well below the plan.
+    normal = LastCommand("normal", 0, NOW - timedelta(minutes=5))
+    state = BatteryState("normal", None, False, False, soc_pct=55, spare_kw=7.2)
+    d = decide_battery(_step("charge", 7.5), state, normal, NOW)
+    assert d.commands == [] and "spare solar" in d.status
+    state = BatteryState("normal", None, False, False, soc_pct=55, spare_kw=4.0)
+    assert [c.service for c in decide_battery(_step("charge", 7.5), state, normal, NOW).commands] == ["force_charge"]
+    # Unknown sun: plan as before.
+    state = BatteryState("normal", None, False, False, soc_pct=55)
+    assert decide_battery(_step("charge", 7.5), state, None, NOW).commands[0].service == "force_charge"
+
+
+def test_a_running_force_keeps_its_power_for_a_while():
+    state = _state("force_charge", 25)
+    recent = LastCommand("charge", 2.5, NOW - timedelta(minutes=3))
+    assert decide_battery(_step("charge", 10.0), state, recent, NOW).commands == []
+    older = LastCommand("charge", 2.5, NOW - timedelta(minutes=12))
+    assert decide_battery(_step("charge", 10.0), state, older, NOW).commands[0].data["power_w"] == 10000

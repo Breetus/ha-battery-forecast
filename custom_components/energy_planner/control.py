@@ -36,6 +36,11 @@ RESERVE_RELEASE_PCT = 2.0
 # Ignore power changes smaller than this, so the inverter isn't re-commanded
 # for every small change in the plan.
 POWER_DEADBAND_KW = 1.0
+# Keep a running force's power level at least this long before changing it.
+POWER_HOLD_MINUTES = 10
+# Spare solar must beat the planned charge by this much to switch to normal,
+# and may fall this far below it before a forced charge starts again.
+SOLAR_COVER_MARGIN_KW = 0.5
 
 
 @dataclass
@@ -64,6 +69,8 @@ class BatteryState:
     # Something outside Home Assistant (Amber SmartShift) has forced the
     # inverter. The planner leaves it alone and doesn't start its own forces.
     external: bool = False
+    # Live solar left after the house and the car (kW), None when unknown.
+    spare_kw: float | None = None
 
 
 @dataclass
@@ -139,6 +146,16 @@ def decide_battery(step: Step, state: BatteryState, last: LastCommand | None, no
         # from normal, so after one of our commands we hold it ourselves.
         mode, car_hold = MODE_HOLD, True
 
+    # A forced charge caps the battery at the commanded power, so spare solar
+    # above it is exported. When the live spare solar already covers the
+    # planned charge, normal self-consumption takes all of it with no grid.
+    solar_covers = False
+    if mode == MODE_CHARGE and state.spare_kw is not None:
+        staying = state.ps_mode in (PS_NORMAL, None) and last is not None and last.mode == MODE_NORMAL
+        margin = -SOLAR_COVER_MARGIN_KW if staying else SOLAR_COVER_MARGIN_KW
+        if state.spare_kw >= power + margin:
+            mode, power, solar_covers = MODE_NORMAL, 0.0, True
+
     floor_reached = False
     if mode == MODE_DISCHARGE and state.soc_pct is not None and state.sell_floor_pct > 0:
         if state.soc_pct <= state.sell_floor_pct:
@@ -173,9 +190,19 @@ def decide_battery(step: Step, state: BatteryState, last: LastCommand | None, no
                 mode=MODE_NORMAL,
                 target=MODE_NORMAL,
             )
+        if solar_covers:
+            label = "Charging from spare solar (it covers the planned grid charge)"
+        elif floor_reached:
+            label = "Normal (selling floor reached)"
+        else:
+            label = "Normal"
         if current in (PS_NORMAL, None):
-            return BatteryDecision([], "Normal (selling floor reached)" if floor_reached else "Normal", target=MODE_NORMAL)
-        status = "Selling floor reached, returning to normal" if floor_reached else "Returning to normal"
+            return BatteryDecision([], label, target=MODE_NORMAL)
+        status = (
+            "Selling floor reached, returning to normal"
+            if floor_reached
+            else ("Spare solar covers the charge, returning to normal" if solar_covers else "Returning to normal")
+        )
         return BatteryDecision([Command("restore_normal")], status, mode=MODE_NORMAL, target=MODE_NORMAL)
 
     label = {
@@ -193,6 +220,10 @@ def decide_battery(step: Step, state: BatteryState, last: LastCommand | None, no
             target=MODE_HOLD,
         )
     same_power = last is not None and last.mode == mode and abs(last.power_kw - power) < POWER_DEADBAND_KW
+    # Each power change restarts PowerSync's force, and the plan's level can
+    # move with every small update, so keep a running force's power for a while.
+    if last is not None and last.mode == mode and now - last.issued_at < timedelta(minutes=POWER_HOLD_MINUTES):
+        same_power = True
     running = current == target and (mode == MODE_HOLD or same_power)
     remaining = state.remaining_minutes
     if running and (remaining is None or remaining > REFRESH_BELOW_MINUTES):

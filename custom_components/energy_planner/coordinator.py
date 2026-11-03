@@ -603,6 +603,16 @@ class EnergyPlannerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             load -= max(_kw(self.hass.states.get(self.conf(CONF_EV_POWER) or "")), 0.0)
         return solar - load
 
+    def _battery_spare_kw(self) -> float | None:
+        """Live solar left for the battery after the house and the car, or None."""
+        load = self.hass.states.get(self.conf(CONF_LOAD) or "")
+        if load is None or _num(load.state) in (None, 0.0):
+            return None  # PowerSync sometimes reports the house at exactly 0
+        sun = self._sun_kw()
+        if sun is None:
+            return None
+        return sun - max(self._ev_power_kw, 0.0)
+
     def _spare_kw(self) -> float | None:
         """Spare solar the car could draw without importing.
 
@@ -774,6 +784,7 @@ class EnergyPlannerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             inverter_forced=self._inverter_forced(now),
             ems_forced=self._ems_forced(),
             external=self._external_control(now),
+            spare_kw=self._battery_spare_kw(),
             expired=_expired(mode_state, now),
         )
         decision = decide_battery(step, state, self._last_battery, now)
