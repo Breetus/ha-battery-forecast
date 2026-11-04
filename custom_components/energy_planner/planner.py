@@ -246,7 +246,10 @@ def _simulate(slot: Slot, b, e, act: _Action, p: Params, ev_need_kwh: float, sol
         if act.mode == MODE_NORMAL:
             pd = np.where(ev_ac > 1e-9, 0.0, np.minimum(np.minimum(deficit, p.max_discharge_kw), avail_ac))
     elif act.mode == MODE_CHARGE:
-        pc = np.minimum(act.power_kw, room_ac)
+        # When the spare solar covers the charge, the controller leaves the
+        # battery in normal mode (a forced charge would cap it and export the
+        # rest), so the battery takes all of the spare solar.
+        pc = np.minimum(np.maximum(act.power_kw, np.minimum(surplus, p.max_charge_kw)), room_ac)
         pd = zero
     else:
         pc = zero

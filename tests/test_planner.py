@@ -282,3 +282,12 @@ def test_selling_floor_applies_only_in_its_window():
     result = plan(day_slots(start, n=24, prices=_morning_spike), all_day)
     spike = [s for s in result.steps if s.start.hour == 7]
     assert all(s.battery_soc_pct >= 39.5 for s in spike if s.mode == MODE_DISCHARGE)
+
+
+def test_a_planned_charge_takes_all_the_spare_solar():
+    # The controller runs a charge the sun covers in normal mode, so the plan
+    # never shows a capped charge exporting the rest of the spare solar.
+    result = plan(day_slots(START), _params())
+    for s in result.steps:
+        if s.mode == MODE_CHARGE and s.solar_kw - s.load_kw > s.power_kw:
+            assert s.grid_kw >= -1e-6 or s.battery_soc_pct >= 99.9
